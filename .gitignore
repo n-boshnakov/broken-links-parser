@@ -37,3 +37,7 @@ Openspec
 
 # broken-links
 /broken-links
+
+# reports
+/reports/*
+!/reports/.gitkeep

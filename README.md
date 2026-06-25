@@ -2,37 +2,43 @@
 
 A CLI tool that scans Markdown and HTML documentation repositories for broken links, locates replacements via git history and the GitHub API, and repairs them in place.
 
-## Current status
+## Pipeline
 
-The **link extractor** stage is implemented. Validation, resolution, repair, and reporting are planned.
+| Stage | Status | Doc |
+|-------|--------|-----|
+| **1. Extraction** — collect all links from `.md` and `.html` files | ✅ Done | [docs/extraction.md](docs/extraction.md) |
+| **2. Validation** — check each link (disk / HTTP) | ✅ Done | [docs/validation.md](docs/validation.md) |
+| **3. Resolution** — find correct replacement via git history / GitHub API / AI | 🔲 Planned | — |
+| **4. Repair** — rewrite broken links in source files | 🔲 Planned | — |
+| **5. Reporting** — CSV report + docforge-compatible log | 🔲 Planned | — |
 
-## Try it now
+## Quick start
 
 ```sh
 # Build
 go build -o broken-links-parser ./cmd/broken-links-parser/
 
-# Extract all links from a repository
+# Extract all links from a repo
 ./broken-links-parser extract --root /path/to/repo --verbose
 
-# Restrict to specific subdirectories
-./broken-links-parser extract --root /path/to/repo --dirs docs,website --verbose
+# Extract + validate + write HTML report
+./broken-links-parser extract \
+  --root /path/to/repo \
+  --validate \
+  --html reports/report.html
 ```
 
-Example output:
-```
-Found 42 links in /path/to/repo
-  [relative] ../guide/intro.md  (docs/overview.md)
-  [absolute] https://github.com/org/repo/blob/main/README.md  (docs/overview.md)
-  [anchor] #installation  (docs/overview.md)
-  [image] ./images/arch.png  (docs/overview.md)
-```
+See [docs/html-report.md](docs/html-report.md) for details on the interactive report.
 
-## Run against a real repo
+## Run against gardener/documentation
 
 ```sh
-git clone https://github.com/gardener/documentation /tmp/gardener-docs
-go run ./cmd/broken-links-parser/ extract --root /tmp/gardener-docs --dirs website/documentation --verbose
+go run ./cmd/broken-links-parser/ extract \
+  --root ~/Documents/GitHub/gardener/documentation \
+  --dirs website/documentation \
+  --validate \
+  --ignore-pattern "https://internal.*" \
+  --html reports/report.html
 ```
 
 ## Run tests
@@ -40,11 +46,3 @@ go run ./cmd/broken-links-parser/ extract --root /tmp/gardener-docs --dirs websi
 ```sh
 go test ./...
 ```
-
-## Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--root` | `.` | Repository root directory to scan |
-| `--dirs` | all | Comma-separated subdirectories to restrict the scan |
-| `--verbose` | false | Print each link found |
