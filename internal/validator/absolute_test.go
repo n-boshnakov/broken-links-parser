@@ -20,7 +20,7 @@ func TestValidateAbsolute(t *testing.T) {
 			w.WriteHeader(200)
 		}))
 		defer srv.Close()
-		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil)
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, "")
 		if !res.Valid || res.StatusCode != 200 {
 			t.Errorf("got valid=%v status=%d", res.Valid, res.StatusCode)
 		}
@@ -36,7 +36,7 @@ func TestValidateAbsolute(t *testing.T) {
 			w.WriteHeader(200)
 		}))
 		defer srv.Close()
-		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil)
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, "")
 		if !res.Valid || res.StatusCode != 200 {
 			t.Errorf("got valid=%v status=%d", res.Valid, res.StatusCode)
 		}
@@ -48,7 +48,7 @@ func TestValidateAbsolute(t *testing.T) {
 			w.WriteHeader(404)
 		}))
 		defer srv.Close()
-		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil)
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, "")
 		if res.Valid || res.StatusCode != 404 || res.Reason != types.ReasonHTTPError {
 			t.Errorf("got valid=%v status=%d reason=%q", res.Valid, res.StatusCode, res.Reason)
 		}
@@ -60,7 +60,7 @@ func TestValidateAbsolute(t *testing.T) {
 			w.WriteHeader(500)
 		}))
 		defer srv.Close()
-		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil)
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, "")
 		if res.Valid || res.StatusCode != 500 {
 			t.Errorf("got valid=%v status=%d", res.Valid, res.StatusCode)
 		}
@@ -76,7 +76,7 @@ func TestValidateAbsolute(t *testing.T) {
 			w.WriteHeader(200)
 		}))
 		defer srv.Close()
-		res := ValidateAbsolute(absLink(srv.URL+"/old"), srv.Client(), nil)
+		res := ValidateAbsolute(absLink(srv.URL+"/old"), srv.Client(), nil, "")
 		if !res.Valid {
 			t.Errorf("expected valid after redirect, got valid=%v status=%d", res.Valid, res.StatusCode)
 		}
@@ -90,7 +90,7 @@ func TestValidateAbsolute(t *testing.T) {
 		}))
 		defer srv.Close()
 		client := &http.Client{Timeout: 50 * time.Millisecond}
-		res := ValidateAbsolute(absLink(srv.URL), client, nil)
+		res := ValidateAbsolute(absLink(srv.URL), client, nil, "")
 		if res.Valid || res.Reason != types.ReasonTimeout {
 			t.Errorf("expected TIMEOUT, got valid=%v reason=%q", res.Valid, res.Reason)
 		}
@@ -98,7 +98,7 @@ func TestValidateAbsolute(t *testing.T) {
 
 	// Ignored pattern
 	t.Run("ignored pattern", func(t *testing.T) {
-		res := ValidateAbsolute(absLink("https://internal.example.com/page"), &http.Client{}, []string{"https://internal.*"})
+		res := ValidateAbsolute(absLink("https://internal.example.com/page"), &http.Client{}, []string{"https://internal.*"}, "")
 		if !res.Valid || res.Reason != types.ReasonIgnored {
 			t.Errorf("expected IGNORED, got valid=%v reason=%q", res.Valid, res.Reason)
 		}

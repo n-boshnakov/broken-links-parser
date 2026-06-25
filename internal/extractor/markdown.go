@@ -157,7 +157,11 @@ func extractRefs(masked []byte, path string, _ []byte) []types.Link {
 }
 
 func classifyURL(url string) types.LinkType {
-	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+	// Any URL with a scheme (http:, https:, mailto:, tel:, ftp:, etc.) is absolute.
+	if i := strings.Index(url, "://"); i > 0 {
+		return types.LinkTypeAbsolute
+	}
+	if strings.HasPrefix(url, "mailto:") || strings.HasPrefix(url, "tel:") {
 		return types.LinkTypeAbsolute
 	}
 	return types.LinkTypeRelative

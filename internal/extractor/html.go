@@ -99,7 +99,10 @@ func classifyHTMLURL(url string) types.LinkType {
 	if strings.HasPrefix(url, "#") {
 		return types.LinkTypeAnchor
 	}
-	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+	if i := strings.Index(url, "://"); i > 0 {
+		return types.LinkTypeAbsolute
+	}
+	if strings.HasPrefix(url, "mailto:") || strings.HasPrefix(url, "tel:") {
 		return types.LinkTypeAbsolute
 	}
 	return types.LinkTypeRelative

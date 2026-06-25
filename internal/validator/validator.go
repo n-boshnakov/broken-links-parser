@@ -13,6 +13,7 @@ type ValidateOptions struct {
 	Concurrency    int
 	Timeout        time.Duration
 	IgnorePatterns []string
+	GitHubToken    string
 }
 
 // Validate classifies each link as valid or broken.
@@ -58,7 +59,7 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[il.idx] = ValidateAbsolute(il.link, client, opts.IgnorePatterns)
+			results[il.idx] = ValidateAbsolute(il.link, client, opts.IgnorePatterns, opts.GitHubToken)
 		}()
 	}
 	wg.Wait()

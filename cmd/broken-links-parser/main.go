@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"html/template"
 	"os"
@@ -16,6 +17,7 @@ import (
 )
 
 func main() {
+	loadDotEnv(".env")
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -68,11 +70,16 @@ var extractCmd = &cobra.Command{
 			}
 			concurrency, _ := cmd.Flags().GetInt("concurrency")
 			timeout, _ := cmd.Flags().GetDuration("timeout")
+			githubToken := os.Getenv("GITHUB_TOKEN")
+			if githubToken != "" {
+				fmt.Println("GitHub token detected — authenticated requests will be used for github.com URLs.")
+			}
 			fmt.Printf("Validating %d links (concurrency=%d, timeout=%s)…\n", len(links), concurrency, timeout)
 			results = validator.Validate(links, validator.ValidateOptions{
 				Concurrency:    concurrency,
 				Timeout:        timeout,
 				IgnorePatterns: patterns,
+				GitHubToken:    githubToken,
 			})
 			broken := 0
 			for _, r := range results {
@@ -135,6 +142,9 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"reasonLabel": func(r reportRow) string {
 		if r.Result == nil || r.Result.Valid {
 			return ""
+		}
+		if r.Result.Reason == types.ReasonHTTPError && r.Result.StatusCode != 0 {
+			return fmt.Sprintf("%s %d", r.Result.Reason, r.Result.StatusCode)
 		}
 		return r.Result.Reason
 	},
@@ -250,4 +260,32 @@ func writeHTMLReport(outPath, root string, links []types.Link, results []types.V
 		Links       []reportRow
 		BrokenCount int
 	}{Root: root, Links: rows, BrokenCount: broken})
+}
+
+// loadDotEnv reads a .env file and sets any unset environment variables from it.
+// Lines starting with # and blank lines are ignored. Already-set env vars are not overridden.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return // missing .env is fine
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if key == "" || os.Getenv(key) != "" {
+			continue // don't override existing env vars
+		}
+		os.Setenv(key, val)
+	}
 }
