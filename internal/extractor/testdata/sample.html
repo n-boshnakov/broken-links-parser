@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <a href="../other/page.html">relative</a>
+  <a href="https://github.com/org/repo">absolute</a>
+  <a href="#section">anchor</a>
+  <a href="">empty ignored</a>
+  <img src="./images/logo.png" />
+  <img src="https://cdn.example.com/banner.png" />
+  <!-- malformed: missing closing quote on attribute, parser recovers -->
+  <a href="https://example.com/after-malformed">still extracted</a>
+</body>
+</html>
