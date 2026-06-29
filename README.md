@@ -8,7 +8,7 @@ A CLI tool that scans Markdown and HTML documentation repositories for broken li
 |-------|--------|-----|
 | **1. Extraction** — collect all links from `.md` and `.html` files | ✅ Done | [docs/extraction.md](docs/extraction.md) |
 | **2. Validation** — check each link (disk / HTTP) | ✅ Done | [docs/validation.md](docs/validation.md) |
-| **3. Resolution** — find correct replacement via git history / GitHub API / AI | 🔲 Planned | — |
+| **3. Resolution** — find correct replacement via git history / GitHub API / AI | ✅ Done | [docs/resolution.md](docs/resolution.md) |
 | **4. Repair** — rewrite broken links in source files | 🔲 Planned | — |
 | **5. Reporting** — CSV report + docforge-compatible log | 🔲 Planned | — |
 

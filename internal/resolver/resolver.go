@@ -1,0 +1,75 @@
+package resolver
+
+import (
+	"strings"
+
+	"github.com/n-boshnakov/broken-links-parser/internal/types"
+)
+
+// ResolveOptions controls resolution behaviour.
+type ResolveOptions struct {
+	RepoRoot    string // local root of the scanned repo (for relative link resolution)
+	ReposDir    string // parent directory containing local clones (e.g. ~/Documents/GitHub)
+	GitHubToken string
+	AIKey       string
+	EnableAI    bool
+	NoFetch     bool
+}
+
+// Resolve attempts to find a replacement URL for each broken ValidationResult.
+// Valid results and IGNORED results are passed through unchanged.
+func Resolve(results []types.ValidationResult, opts ResolveOptions) []types.ResolutionResult {
+	out := make([]types.ResolutionResult, len(results))
+	for i, r := range results {
+		if r.Valid || r.Reason == types.ReasonIgnored {
+			out[i] = types.ResolutionResult{ValidationResult: r}
+			continue
+		}
+		out[i] = resolveOne(r, opts)
+	}
+	return out
+}
+
+func resolveOne(r types.ValidationResult, opts ResolveOptions) types.ResolutionResult {
+	switch r.Link.Type {
+	case types.LinkTypeRelative, types.LinkTypeAnchor, types.LinkTypeImage:
+		if opts.RepoRoot != "" {
+			return ResolveRelative(r, opts.RepoRoot, opts.NoFetch)
+		}
+	case types.LinkTypeAbsolute:
+		if isGitHubLink(r.Link.URL) {
+			// Try local clone first; keep its result even if unresolved (it carries UnresolvedReason).
+			var cloneResult types.ResolutionResult
+			if opts.ReposDir != "" {
+				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.NoFetch)
+				if cloneResult.FixedURL != "" {
+					return cloneResult
+				}
+			}
+			// Fall back to GitHub API; it always sets UnresolvedReason on failure.
+			apiResult := ResolveViaGitHubAPI(r, opts.GitHubToken)
+			if apiResult.FixedURL != "" {
+				return apiResult
+			}
+			// Return the API result (carries the best UnresolvedReason, e.g. API_BLOCKED).
+			return apiResult
+		} else if opts.EnableAI && opts.AIKey != "" {
+			res := ResolveViaAI(r, opts.AIKey)
+			if res.FixedURL == "" {
+				res.UnresolvedReason = types.UnresolvedAIFailed
+			}
+			return res
+		} else {
+			return types.ResolutionResult{
+				ValidationResult: r,
+				UnresolvedReason: types.UnresolvedExternalNoAI,
+			}
+		}
+	}
+	return types.ResolutionResult{ValidationResult: r}
+}
+
+func isGitHubLink(url string) bool {
+	return strings.HasPrefix(url, "https://github.com/") ||
+		strings.HasPrefix(url, "https://raw.githubusercontent.com/")
+}

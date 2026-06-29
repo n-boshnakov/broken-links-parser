@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/extractor"
+	"github.com/n-boshnakov/broken-links-parser/internal/resolver"
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
 	"github.com/n-boshnakov/broken-links-parser/internal/validator"
 )
@@ -52,6 +53,7 @@ var extractCmd = &cobra.Command{
 		}
 
 		var results []types.ValidationResult
+		var resolutions []types.ResolutionResult
 		if doValidate, _ := cmd.Flags().GetBool("validate"); doValidate {
 			patterns, _ := cmd.Flags().GetStringArray("ignore-pattern")
 
@@ -90,8 +92,30 @@ var extractCmd = &cobra.Command{
 			fmt.Printf("Validation complete: %d broken, %d valid\n", broken, len(links)-broken)
 		}
 
+		if doResolve, _ := cmd.Flags().GetBool("resolve"); doResolve && len(results) > 0 {
+			reposDir, _ := cmd.Flags().GetString("repos-dir")
+			noFetch, _ := cmd.Flags().GetBool("no-fetch")
+			enableAI, _ := cmd.Flags().GetBool("ai")
+			fmt.Println("Resolving broken links…")
+			resolutions = resolver.Resolve(results, resolver.ResolveOptions{
+				RepoRoot:    rootDir,
+				ReposDir:    reposDir,
+				GitHubToken: os.Getenv("GITHUB_TOKEN"),
+				AIKey:       os.Getenv("ANTHROPIC_API_KEY"),
+				EnableAI:    enableAI,
+				NoFetch:     noFetch,
+			})
+			resolved := 0
+			for _, r := range resolutions {
+				if r.FixedURL != "" {
+					resolved++
+				}
+			}
+			fmt.Printf("Resolution complete: %d fixed, %d unresolved\n", resolved, len(resolutions)-resolved)
+		}
+
 		if out, _ := cmd.Flags().GetString("html"); out != "" {
-			if err := writeHTMLReport(out, rootDir, links, results); err != nil {
+			if err := writeHTMLReport(out, rootDir, links, results, resolutions); err != nil {
 				return fmt.Errorf("writing HTML report: %w", err)
 			}
 			fmt.Printf("HTML report written to %s\n", out)
@@ -110,6 +134,11 @@ func init() {
 	extractCmd.Flags().String("ignore-file", "", "Path to a file containing ignore patterns (one per line, # for comments)")
 	extractCmd.Flags().Int("concurrency", 5, "Max concurrent HTTP requests during validation")
 	extractCmd.Flags().Duration("timeout", 15*time.Second, "Per-link HTTP timeout")
+	extractCmd.Flags().Bool("resolve", false, "Attempt to resolve broken links after validation")
+	extractCmd.Flags().String("repos-dir", "", "Directory containing local repo clones for faster resolution (e.g. ~/Documents/GitHub)")
+	extractCmd.Flags().Bool("no-fetch", false, "Skip git fetch when using local clones for resolution")
+	extractCmd.Flags().Bool("ai", false, "Use Claude AI as last-resort resolver for external links (requires ANTHROPIC_API_KEY)")
+	extractCmd.Flags().Bool("apply-ai", false, "Allow AI-suggested fixes to be applied by the repair stage")
 	rootCmd.AddCommand(extractCmd)
 }
 
@@ -151,6 +180,70 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"hasValidation": func(rows []reportRow) bool {
 		return len(rows) > 0 && rows[0].Result != nil
 	},
+	"hasResolution": func(rows []reportRow) bool {
+		for _, r := range rows {
+			if r.Resolution != nil {
+				return true
+			}
+		}
+		return false
+	},
+	"fixedURL": func(r reportRow) string {
+		if r.Resolution == nil {
+			return ""
+		}
+		return r.Resolution.FixedURL
+	},
+	"fixedLabel": func(r reportRow) string {
+		if r.Resolution == nil || r.Resolution.FixedURL == "" {
+			return ""
+		}
+		if r.Resolution.Deleted {
+			return "Deleted in commit: " + r.Resolution.FixedURL
+		}
+		return r.Resolution.FixedURL
+	},
+	"unresolvedReason": func(r reportRow) string {
+		if r.Resolution == nil || r.Resolution.FixedURL != "" {
+			return ""
+		}
+		switch r.Resolution.UnresolvedReason {
+		case types.UnresolvedAPIBlocked:
+			return "API blocked (token policy)"
+		case types.UnresolvedAPIRateLimit:
+			return "API rate limited"
+		case types.UnresolvedRepoNotFound:
+			return "Repo not found or private"
+		case types.UnresolvedAmbiguous:
+			return "Ambiguous (multiple matches)"
+		case types.UnresolvedExternalNoAI:
+			return "External link (enable --ai)"
+		case types.UnresolvedAIFailed:
+			return "AI returned no suggestion"
+		case types.UnresolvedNoHistory:
+			return "No history found"
+		default:
+			return ""
+		}
+	},
+	"strategyLabel": func(r reportRow) string {
+		if r.Resolution == nil || r.Resolution.Strategy == "" {
+			return ""
+		}
+		if r.Resolution.Strategy == types.StrategyAI {
+			return "AI (low confidence)"
+		}
+		return r.Resolution.Strategy
+	},
+	"strategyClass": func(r reportRow) string {
+		if r.Resolution == nil {
+			return ""
+		}
+		if r.Resolution.Strategy == types.StrategyAI {
+			return "strategy-ai"
+		}
+		return "strategy-normal"
+	},
 }).Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -174,6 +267,9 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   .valid    { background:#dcfce7; color:#166534; }
   .broken   { background:#fee2e2; color:#991b1b; }
   .ignored  { background:#f3f4f6; color:#6b7280; }
+  .strategy-normal { background:#dbeafe; color:#1e40af; }
+  .strategy-ai     { background:#fef9c3; color:#854d0e; }
+  .unresolved-reason { color:#6b7280; font-size:.8rem; font-style:italic; }
   a { color: #2563eb; }
 </style>
 </head>
@@ -188,6 +284,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
       <th onclick="sort(1)">URL</th>
       <th onclick="sort(2)">Source file</th>
       {{if hasValidation .Links}}<th onclick="sort(3)">Status</th>{{end}}
+      {{if hasResolution .Links}}<th onclick="sort(4)">Fixed Link</th><th onclick="sort(5)">Strategy</th>{{end}}
     </tr>
   </thead>
   <tbody>
@@ -197,6 +294,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
       <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
       <td>{{.Rel}}</td>
       {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}</td>{{end}}
+      {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}">{{strategyLabel .}}</span>{{end}}</td>{{end}}
     </tr>
   {{end}}
   </tbody>
@@ -226,11 +324,12 @@ function sort(col) {
 
 type reportRow struct {
 	types.Link
-	Rel    string
-	Result *types.ValidationResult
+	Rel        string
+	Result     *types.ValidationResult
+	Resolution *types.ResolutionResult
 }
 
-func writeHTMLReport(outPath, root string, links []types.Link, results []types.ValidationResult) error {
+func writeHTMLReport(outPath, root string, links []types.Link, results []types.ValidationResult, resolutions []types.ResolutionResult) error {
 	rows := make([]reportRow, len(links))
 	broken := 0
 	for i, l := range links {
@@ -245,6 +344,10 @@ func writeHTMLReport(outPath, root string, links []types.Link, results []types.V
 			if !r.Valid && r.Reason != types.ReasonIgnored {
 				broken++
 			}
+		}
+		if i < len(resolutions) {
+			res := resolutions[i]
+			row.Resolution = &res
 		}
 		rows[i] = row
 	}
