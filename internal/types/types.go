@@ -32,8 +32,13 @@ const (
 	UnresolvedRepoNotFound   = "REPO_NOT_FOUND"      // org/repo does not exist or is private
 	UnresolvedAmbiguous      = "AMBIGUOUS"           // multiple files with same name found, cannot determine correct one
 	UnresolvedNoCloneNoAPI   = "NO_CLONE_NO_API"     // no local clone and API unavailable
-	UnresolvedExternalNoAI   = "EXTERNAL_NO_AI"      // non-GitHub link and --ai not enabled
-	UnresolvedAIFailed       = "AI_FAILED"           // AI was enabled but returned no useful result
+	UnresolvedExternalNoAI      = "EXTERNAL_NO_AI"      // non-GitHub link and --ai not enabled
+	UnresolvedBotBlocked        = "BOT_BLOCKED"          // server returned 403/429 — likely works in browser, AI skipped
+	UnresolvedAIFailed          = "AI_FAILED"            // AI was enabled but returned no useful result
+	UnresolvedAIInvalidURL      = "AI_INVALID_URL"          // AI returned a syntactically invalid URL
+	UnresolvedAINoValidCandidate = "AI_NO_VALID_CANDIDATE"  // AI returned candidates but all failed HTTP validation
+	UnresolvedAIAuthError       = "AI_AUTH_ERROR"           // API key is missing, invalid, or rejected
+	UnresolvedSourceMalformed   = "SOURCE_MALFORMED"        // the original broken URL is itself malformed
 )
 
 // ResolutionResult is the outcome of attempting to find a replacement for a broken link.
@@ -69,6 +74,7 @@ type ValidationResult struct {
 // Repairs must be applied in reverse offset order to keep earlier offsets valid.
 type Link struct {
 	URL        string
+	Text       string // anchor text or alt text — empty for reference-style links
 	Type       LinkType
 	SourceFile string
 	Start      int
