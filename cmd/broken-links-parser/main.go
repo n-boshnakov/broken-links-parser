@@ -96,12 +96,18 @@ var extractCmd = &cobra.Command{
 			reposDir, _ := cmd.Flags().GetString("repos-dir")
 			noFetch, _ := cmd.Flags().GetBool("no-fetch")
 			enableAI, _ := cmd.Flags().GetBool("ai")
+			aiCfg := resolver.AIConfigFromEnv()
+			if enableAI && aiCfg.APIKey == "" {
+				fmt.Fprintln(os.Stderr, "Warning: --ai set but AI_API_KEY not found in environment or .env")
+			} else if enableAI {
+				fmt.Printf("AI resolution enabled (model: %s, openai-compat: %v)\n", aiCfg.Model, aiCfg.BaseURL != "")
+			}
 			fmt.Println("Resolving broken links…")
 			resolutions = resolver.Resolve(results, resolver.ResolveOptions{
 				RepoRoot:    rootDir,
 				ReposDir:    reposDir,
 				GitHubToken: os.Getenv("GITHUB_TOKEN"),
-				AIKey:       os.Getenv("ANTHROPIC_API_KEY"),
+				AI:          aiCfg,
 				EnableAI:    enableAI,
 				NoFetch:     noFetch,
 			})
@@ -218,8 +224,18 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			return "Ambiguous (multiple matches)"
 		case types.UnresolvedExternalNoAI:
 			return "External link (enable --ai)"
+		case types.UnresolvedBotBlocked:
+			return "Bot-blocked (403/429) — likely works in browser"
 		case types.UnresolvedAIFailed:
 			return "AI returned no suggestion"
+		case types.UnresolvedAIAuthError:
+			return "AI auth error (check ANTHROPIC_API_KEY)"
+		case types.UnresolvedAIInvalidURL:
+			return "AI returned an invalid URL"
+		case types.UnresolvedAINoValidCandidate:
+			return "AI suggestions did not pass validation"
+		case types.UnresolvedSourceMalformed:
+			return "Source URL is malformed"
 		case types.UnresolvedNoHistory:
 			return "No history found"
 		default:

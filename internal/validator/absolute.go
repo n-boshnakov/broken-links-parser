@@ -3,6 +3,7 @@ package validator
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
 )
@@ -34,6 +35,14 @@ func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, g
 		return types.ValidationResult{Link: link, Valid: true, StatusCode: status}
 	}
 	return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonHTTPError, StatusCode: status}
+}
+
+// CheckURL performs a HEAD→GET check on a raw URL string and returns true if reachable.
+// Timeouts and non-2xx/3xx responses return false. Used by the AI resolver to validate candidates.
+func CheckURL(rawURL string) bool {
+	client := &http.Client{Timeout: 10 * time.Second}
+	status, err := headWithFallback(client, rawURL, "")
+	return err == nil && status >= 200 && status < 400
 }
 
 func headWithFallback(client *http.Client, url, githubToken string) (int, error) {

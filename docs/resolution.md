@@ -47,7 +47,10 @@ When no fix can be found, the report shows an italicised reason in the Fixed Lin
 | `Repo not found or private` | The GitHub API returned 404 — the org/repo may have been deleted, renamed, or made private | Check if the repo still exists; update the link manually |
 | `Ambiguous (multiple matches)` | Multiple files with the same name exist in the current repo tree and commit history could not identify the exact rename target | Check the repo manually to determine which file is the intended target |
 | `External link (enable --ai)` | The link points to a non-GitHub URL and `--ai` is not enabled, so no programmatic strategy is available | Re-run with `--ai` to attempt AI-assisted resolution, or fix manually |
-| `AI returned no suggestion` | `--ai` was enabled but the Claude API returned no usable replacement URL within the timeout | Check the URL manually; the resource may simply be gone |
+| `AI returned no suggestion` | `--ai` was enabled but Claude returned no candidates | Check the URL manually |
+| `AI suggestions did not pass validation` | Claude returned candidates but all failed HTTP validation | The candidates are visible in the report; check them manually |
+| `AI returned an invalid URL` | Claude returned a syntactically malformed URL | Try enabling a stronger model |
+| `Source URL is malformed` | The original broken URL is itself syntactically invalid — AI resolution was skipped | Fix the URL syntax in the source file directly |
 
 ### Note on GitHub token types
 

@@ -34,6 +34,10 @@ func ExtractHTML(path string) ([]types.Link, error) {
 		switch tok.Data {
 		case "a":
 			if lnk, ok := attrLink(data, tok, "href", path, false); ok {
+				// Grab inner text from the next token if it's a text node.
+				if z.Next() == html.TextToken {
+					lnk.Text = strings.TrimSpace(string(z.Text()))
+				}
 				links = append(links, lnk)
 			}
 		case "img":
@@ -48,12 +52,16 @@ func ExtractHTML(path string) ([]types.Link, error) {
 // attrLink finds the named attribute in tok, validates it is non-empty,
 // locates its byte offset in the original file data, and returns a Link.
 // isImage forces LinkTypeImage regardless of the URL value.
+// For <img>, the alt attribute is used as Text. For <a>, text is left empty
+// (inner text requires consuming the next token — handled by the caller).
 func attrLink(data []byte, tok html.Token, attrName, path string, isImage bool) (types.Link, bool) {
-	var val string
+	var val, text string
 	for _, a := range tok.Attr {
 		if a.Key == attrName {
 			val = a.Val
-			break
+		}
+		if isImage && a.Key == "alt" {
+			text = a.Val
 		}
 	}
 	if val == "" {
@@ -71,6 +79,7 @@ func attrLink(data []byte, tok html.Token, attrName, path string, isImage bool) 
 
 	return types.Link{
 		URL:        val,
+		Text:       text,
 		Type:       linkType,
 		SourceFile: path,
 		Start:      start,

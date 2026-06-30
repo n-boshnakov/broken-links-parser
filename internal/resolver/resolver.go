@@ -11,7 +11,7 @@ type ResolveOptions struct {
 	RepoRoot    string // local root of the scanned repo (for relative link resolution)
 	ReposDir    string // parent directory containing local clones (e.g. ~/Documents/GitHub)
 	GitHubToken string
-	AIKey       string
+	AI          AIConfig
 	EnableAI    bool
 	NoFetch     bool
 }
@@ -53,12 +53,15 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions) types.ResolutionR
 			}
 			// Return the API result (carries the best UnresolvedReason, e.g. API_BLOCKED).
 			return apiResult
-		} else if opts.EnableAI && opts.AIKey != "" {
-			res := ResolveViaAI(r, opts.AIKey)
-			if res.FixedURL == "" {
-				res.UnresolvedReason = types.UnresolvedAIFailed
+		} else if opts.EnableAI && opts.AI.APIKey != "" {
+			// Skip AI for bot-blocked sites (403) — the page likely exists, just blocks automated requests.
+			if r.StatusCode == 403 || r.StatusCode == 429 {
+				return types.ResolutionResult{
+					ValidationResult: r,
+					UnresolvedReason: types.UnresolvedBotBlocked,
+				}
 			}
-			return res
+			return ResolveViaAI(r, opts.AI)
 		} else {
 			return types.ResolutionResult{
 				ValidationResult: r,
@@ -69,7 +72,7 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions) types.ResolutionR
 	return types.ResolutionResult{ValidationResult: r}
 }
 
-func isGitHubLink(url string) bool {
-	return strings.HasPrefix(url, "https://github.com/") ||
-		strings.HasPrefix(url, "https://raw.githubusercontent.com/")
+func isGitHubLink(u string) bool {
+	return strings.HasPrefix(u, "https://github.com/") ||
+		strings.HasPrefix(u, "https://raw.githubusercontent.com/")
 }

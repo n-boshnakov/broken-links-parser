@@ -16,11 +16,11 @@ var (
 	reInlineCode = regexp.MustCompile("`[^`\n]+`")
 
 	// ![alt](src)
-	reImage = regexp.MustCompile(`!\[[^\]]*\]\(([^)]+)\)`)
+	reImage = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
 	// Any [text](url) — we filter out images by checking the preceding byte.
-	reAnyInline = regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
+	reAnyInline = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
 	// [text](#anchor) — anchor-only inline links.
-	reAnchor = regexp.MustCompile(`\[[^\]]+\]\((#[^)]*)\)`)
+	reAnchor = regexp.MustCompile(`\[([^\]]+)\]\((#[^)]*)\)`)
 	// Reference definitions: [ref]: url
 	reRefDef = regexp.MustCompile(`(?m)^\[([^\]]+)\]:\s+(\S+)`)
 	// Reference usages: [text][ref]
@@ -67,14 +67,15 @@ func maskCodeRegions(data []byte) []byte {
 func extractImages(masked []byte, path string, _ []byte) []types.Link {
 	var links []types.Link
 	for _, m := range reImage.FindAllSubmatchIndex(masked, -1) {
-		// m[2]:m[3] is the capture group (src value).
-		url := string(masked[m[2]:m[3]])
+		// m[2]:m[3] = alt text, m[4]:m[5] = src url
+		url := string(masked[m[4]:m[5]])
 		links = append(links, types.Link{
 			URL:        url,
+			Text:       string(masked[m[2]:m[3]]),
 			Type:       types.LinkTypeImage,
 			SourceFile: path,
-			Start:      m[2],
-			End:        m[3],
+			Start:      m[4],
+			End:        m[5],
 		})
 	}
 	return links
@@ -87,27 +88,31 @@ func extractInline(masked []byte, path string, _ []byte) []types.Link {
 		if m[0] > 0 && masked[m[0]-1] == '!' {
 			continue
 		}
-		url := string(masked[m[2]:m[3]])
+		// m[2]:m[3] = link text, m[4]:m[5] = url
+		url := string(masked[m[4]:m[5]])
 		if strings.HasPrefix(url, "#") {
 			continue // anchor-only, handled separately
 		}
 		links = append(links, types.Link{
 			URL:        url,
+			Text:       string(masked[m[2]:m[3]]),
 			Type:       classifyURL(url),
 			SourceFile: path,
-			Start:      m[2],
-			End:        m[3],
+			Start:      m[4],
+			End:        m[5],
 		})
 	}
 	// Anchor-only links.
 	for _, m := range reAnchor.FindAllSubmatchIndex(masked, -1) {
-		url := string(masked[m[2]:m[3]])
+		// m[2]:m[3] = link text, m[4]:m[5] = anchor
+		url := string(masked[m[4]:m[5]])
 		links = append(links, types.Link{
 			URL:        url,
+			Text:       string(masked[m[2]:m[3]]),
 			Type:       types.LinkTypeAnchor,
 			SourceFile: path,
-			Start:      m[2],
-			End:        m[3],
+			Start:      m[4],
+			End:        m[5],
 		})
 	}
 	return links
