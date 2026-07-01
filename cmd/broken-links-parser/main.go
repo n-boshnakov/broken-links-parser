@@ -3,18 +3,16 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"html/template"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/n-boshnakov/broken-links-parser/internal/extractor"
+	"github.com/n-boshnakov/broken-links-parser/internal/pipeline"
+	"github.com/n-boshnakov/broken-links-parser/internal/reporter"
 	"github.com/n-boshnakov/broken-links-parser/internal/resolver"
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
-	"github.com/n-boshnakov/broken-links-parser/internal/validator"
 )
 
 func main() {
@@ -39,100 +37,108 @@ var extractCmd = &cobra.Command{
 	Use:   "extract",
 	Short: "Extract all links from a repository and print a summary",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		links, err := extractor.Extract(rootDir, dirs)
+		opts := buildOptions(cmd)
+
+		// Stage 1: Extract
+		links, err := pipeline.Extract(opts)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Found %d links in %s\n", len(links), rootDir)
-
-		if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+		fmt.Printf("Found %d links in %s\n", len(links), opts.Root)
+		if opts.Verbose {
 			for _, l := range links {
-				rel, _ := strings.CutPrefix(l.SourceFile, rootDir+"/")
+				rel, _ := strings.CutPrefix(l.SourceFile, opts.Root+"/")
 				fmt.Printf("  [%s] %s  (%s)\n", l.Type, l.URL, rel)
 			}
 		}
 
-		var results []types.ValidationResult
-		var resolutions []types.ResolutionResult
-		if doValidate, _ := cmd.Flags().GetBool("validate"); doValidate {
-			patterns, _ := cmd.Flags().GetStringArray("ignore-pattern")
+		result := &pipeline.Result{Links: links}
 
-			// Auto-load .linkignore from the scanned repo root, then apply --ignore-file on top.
-			if filePatterns, err := validator.LoadIgnoreFile(filepath.Join(rootDir, ".linkignore")); err != nil {
-				return fmt.Errorf("reading .linkignore: %w", err)
-			} else {
-				patterns = append(patterns, filePatterns...)
-			}
-			if ignoreFile, _ := cmd.Flags().GetString("ignore-file"); ignoreFile != "" {
-				filePatterns, err := validator.LoadIgnoreFile(ignoreFile)
-				if err != nil {
-					return fmt.Errorf("reading ignore file: %w", err)
-				}
-				patterns = append(patterns, filePatterns...)
-			}
-			concurrency, _ := cmd.Flags().GetInt("concurrency")
-			timeout, _ := cmd.Flags().GetDuration("timeout")
-			githubToken := os.Getenv("GITHUB_TOKEN")
-			if githubToken != "" {
+		// Stage 2: Validate
+		if opts.Validate {
+			if opts.GitHubToken != "" {
 				fmt.Println("GitHub token detected — authenticated requests will be used for github.com URLs.")
 			}
-			fmt.Printf("Validating %d links (concurrency=%d, timeout=%s)…\n", len(links), concurrency, timeout)
-			results = validator.Validate(links, validator.ValidateOptions{
-				Concurrency:    concurrency,
-				Timeout:        timeout,
-				IgnorePatterns: patterns,
-				GitHubToken:    githubToken,
-			})
+			fmt.Printf("Validating %d links (concurrency=%d, timeout=%s)…\n", len(links), opts.Concurrency, opts.Timeout)
+			validations, err := pipeline.Validate(links, opts)
+			if err != nil {
+				return err
+			}
+			result.Validations = validations
 			broken := 0
-			for _, r := range results {
+			for _, r := range validations {
 				if !r.Valid && r.Reason != types.ReasonIgnored {
 					broken++
 				}
 			}
 			fmt.Printf("Validation complete: %d broken, %d valid\n", broken, len(links)-broken)
-		}
 
-		if doResolve, _ := cmd.Flags().GetBool("resolve"); doResolve && len(results) > 0 {
-			reposDir, _ := cmd.Flags().GetString("repos-dir")
-			noFetch, _ := cmd.Flags().GetBool("no-fetch")
-			enableAI, _ := cmd.Flags().GetBool("ai")
-			enableWayback, _ := cmd.Flags().GetBool("wayback")
-			aiCfg := resolver.AIConfigFromEnv()
-			if enableAI && aiCfg.APIKey == "" {
-				fmt.Fprintln(os.Stderr, "Warning: --ai set but AI_API_KEY not found in environment or .env")
-			} else if enableAI {
-				fmt.Printf("AI resolution enabled (model: %s, openai-compat: %v)\n", aiCfg.Model, aiCfg.BaseURL != "")
-			}
-			if enableWayback {
-				fmt.Println("Wayback Machine enrichment enabled.")
-			}
-			fmt.Println("Resolving broken links…")
-			resolutions = resolver.Resolve(results, resolver.ResolveOptions{
-				RepoRoot:      rootDir,
-				ReposDir:      reposDir,
-				GitHubToken:   os.Getenv("GITHUB_TOKEN"),
-				AI:            aiCfg,
-				EnableAI:      enableAI,
-				EnableWayback: enableWayback,
-				NoFetch:       noFetch,
-			})
-			resolved := 0
-			for _, r := range resolutions {
-				if r.FixedURL != "" {
-					resolved++
+			// Stage 3: Resolve
+			if opts.Resolve && len(validations) > 0 {
+				if opts.EnableAI && opts.AI.APIKey == "" {
+					fmt.Fprintln(os.Stderr, "Warning: --ai set but AI_API_KEY not found in environment or .env")
+				} else if opts.EnableAI {
+					fmt.Printf("AI resolution enabled (model: %s, openai-compat: %v)\n", opts.AI.Model, opts.AI.BaseURL != "")
 				}
+				if opts.EnableWayback {
+					fmt.Println("Wayback Machine enrichment enabled.")
+				}
+				fmt.Println("Resolving broken links…")
+				resolutions := pipeline.Resolve(validations, opts)
+				result.Resolutions = resolutions
+				resolved := 0
+				for _, r := range resolutions {
+					if r.FixedURL != "" {
+						resolved++
+					}
+				}
+				fmt.Printf("Resolution complete: %d fixed, %d unresolved\n", resolved, len(resolutions)-resolved)
 			}
-			fmt.Printf("Resolution complete: %d fixed, %d unresolved\n", resolved, len(resolutions)-resolved)
 		}
 
-		if out, _ := cmd.Flags().GetString("html"); out != "" {
-			if err := writeHTMLReport(out, rootDir, links, results, resolutions); err != nil {
+		// Stage 4: Report
+		if opts.HTMLPath != "" {
+			if err := reporter.WriteHTML(opts.HTMLPath, opts.Root, result); err != nil {
 				return fmt.Errorf("writing HTML report: %w", err)
 			}
-			fmt.Printf("HTML report written to %s\n", out)
+			fmt.Printf("HTML report written to %s\n", opts.HTMLPath)
 		}
 		return nil
 	},
+}
+
+func buildOptions(cmd *cobra.Command) pipeline.Options {
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	validate, _ := cmd.Flags().GetBool("validate")
+	ignorePatterns, _ := cmd.Flags().GetStringArray("ignore-pattern")
+	ignoreFile, _ := cmd.Flags().GetString("ignore-file")
+	concurrency, _ := cmd.Flags().GetInt("concurrency")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	resolve, _ := cmd.Flags().GetBool("resolve")
+	reposDir, _ := cmd.Flags().GetString("repos-dir")
+	noFetch, _ := cmd.Flags().GetBool("no-fetch")
+	enableAI, _ := cmd.Flags().GetBool("ai")
+	enableWayback, _ := cmd.Flags().GetBool("wayback")
+	htmlPath, _ := cmd.Flags().GetString("html")
+
+	return pipeline.Options{
+		Root:           rootDir,
+		Dirs:           dirs,
+		Verbose:        verbose,
+		Validate:       validate,
+		IgnorePatterns: ignorePatterns,
+		IgnoreFile:     ignoreFile,
+		Concurrency:    concurrency,
+		Timeout:        timeout,
+		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
+		Resolve:        resolve,
+		ReposDir:       reposDir,
+		NoFetch:        noFetch,
+		AI:             resolver.AIConfigFromEnv(),
+		EnableAI:       enableAI,
+		EnableWayback:  enableWayback,
+		HTMLPath:       htmlPath,
+	}
 }
 
 func init() {
@@ -148,250 +154,10 @@ func init() {
 	extractCmd.Flags().Bool("resolve", false, "Attempt to resolve broken links after validation")
 	extractCmd.Flags().String("repos-dir", "", "Directory containing local repo clones for faster resolution (e.g. ~/Documents/GitHub)")
 	extractCmd.Flags().Bool("no-fetch", false, "Skip git fetch when using local clones for resolution")
-	extractCmd.Flags().Bool("ai", false, "Use Claude AI as last-resort resolver for external links (requires ANTHROPIC_API_KEY)")
+	extractCmd.Flags().Bool("ai", false, "Use Claude AI as last-resort resolver for external links (requires AI_API_KEY)")
 	extractCmd.Flags().Bool("apply-ai", false, "Allow AI-suggested fixes to be applied by the repair stage")
 	extractCmd.Flags().Bool("wayback", false, "Enrich AI resolution with Wayback Machine context and use as fallback (requires --ai)")
 	rootCmd.AddCommand(extractCmd)
-}
-
-var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
-	"isAbsolute": func(r reportRow) bool { return r.Type == types.LinkTypeAbsolute },
-	"statusClass": func(r reportRow) string {
-		if r.Result == nil {
-			return ""
-		}
-		if r.Result.Reason == types.ReasonIgnored {
-			return "ignored"
-		}
-		if r.Result.Valid {
-			return "valid"
-		}
-		return "broken"
-	},
-	"statusLabel": func(r reportRow) string {
-		if r.Result == nil {
-			return ""
-		}
-		if r.Result.Reason == types.ReasonIgnored {
-			return "Ignored"
-		}
-		if r.Result.Valid {
-			return "Valid"
-		}
-		return "Broken"
-	},
-	"reasonLabel": func(r reportRow) string {
-		if r.Result == nil || r.Result.Valid {
-			return ""
-		}
-		if r.Result.Reason == types.ReasonHTTPError && r.Result.StatusCode != 0 {
-			return fmt.Sprintf("%s %d", r.Result.Reason, r.Result.StatusCode)
-		}
-		return r.Result.Reason
-	},
-	"hasValidation": func(rows []reportRow) bool {
-		return len(rows) > 0 && rows[0].Result != nil
-	},
-	"hasResolution": func(rows []reportRow) bool {
-		for _, r := range rows {
-			if r.Resolution != nil {
-				return true
-			}
-		}
-		return false
-	},
-	"fixedURL": func(r reportRow) string {
-		if r.Resolution == nil {
-			return ""
-		}
-		return r.Resolution.FixedURL
-	},
-	"fixedLabel": func(r reportRow) string {
-		if r.Resolution == nil || r.Resolution.FixedURL == "" {
-			return ""
-		}
-		if r.Resolution.Deleted {
-			return "Deleted in commit: " + r.Resolution.FixedURL
-		}
-		if r.Resolution.IsWaybackFallback {
-			return "No live replacement found — see archived version: " + r.Resolution.FixedURL
-		}
-		return r.Resolution.FixedURL
-	},
-	"unresolvedReason": func(r reportRow) string {
-		if r.Resolution == nil || r.Resolution.FixedURL != "" {
-			return ""
-		}
-		switch r.Resolution.UnresolvedReason {
-		case types.UnresolvedAPIBlocked:
-			return "API blocked (token policy)"
-		case types.UnresolvedAPIRateLimit:
-			return "API rate limited"
-		case types.UnresolvedRepoNotFound:
-			return "Repo not found or private"
-		case types.UnresolvedAmbiguous:
-			return "Ambiguous (multiple matches)"
-		case types.UnresolvedExternalNoAI:
-			return "External link (enable --ai)"
-		case types.UnresolvedBotBlocked:
-			return "Bot-blocked (403/429) — likely works in browser"
-		case types.UnresolvedAIFailed:
-			return "AI returned no suggestion"
-		case types.UnresolvedAIAuthError:
-			return "AI auth error (check ANTHROPIC_API_KEY)"
-		case types.UnresolvedAIInvalidURL:
-			return "AI returned an invalid URL"
-		case types.UnresolvedAINoValidCandidate:
-			return "AI suggestions did not pass validation"
-		case types.UnresolvedSourceMalformed:
-			return "Source URL is malformed"
-		case types.UnresolvedNoHistory:
-			return "No history found"
-		default:
-			return ""
-		}
-	},
-	"strategyLabel": func(r reportRow) string {
-		if r.Resolution == nil || r.Resolution.Strategy == "" {
-			return ""
-		}
-		switch r.Resolution.Strategy {
-		case types.StrategyAI:
-			return "AI (low confidence)"
-		case types.StrategyWaybackAI:
-			return "Wayback + AI"
-		}
-		return r.Resolution.Strategy
-	},
-	"strategyClass": func(r reportRow) string {
-		if r.Resolution == nil {
-			return ""
-		}
-		switch r.Resolution.Strategy {
-		case types.StrategyAI, types.StrategyWaybackAI:
-			return "strategy-ai"
-		}
-		return "strategy-normal"
-	},
-}).Parse(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Link Report — {{.Root}}</title>
-<style>
-  body { font-family: sans-serif; margin: 2rem; color: #222; }
-  h1 { font-size: 1.4rem; }
-  p.meta { color: #666; font-size: .9rem; }
-  input[type=search] { padding: .4rem .6rem; font-size: 1rem; width: 24rem; margin-bottom: 1rem; }
-  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
-  th { background: #f0f0f0; text-align: left; padding: .5rem .75rem; border-bottom: 2px solid #ccc; cursor: pointer; user-select: none; }
-  td { padding: .4rem .75rem; border-bottom: 1px solid #e0e0e0; vertical-align: top; word-break: break-all; }
-  tr:hover td { background: #fafafa; }
-  tr.row-broken td { background: #fff1f2; }
-  .badge { display:inline-block; padding:.15rem .4rem; border-radius:3px; font-size:.75rem; font-weight:600; }
-  .relative { background:#dbeafe; color:#1e40af; }
-  .absolute { background:#dcfce7; color:#166534; }
-  .anchor   { background:#fef9c3; color:#854d0e; }
-  .image    { background:#fce7f3; color:#9d174d; }
-  .valid    { background:#dcfce7; color:#166534; }
-  .broken   { background:#fee2e2; color:#991b1b; }
-  .ignored  { background:#f3f4f6; color:#6b7280; }
-  .strategy-normal { background:#dbeafe; color:#1e40af; }
-  .strategy-ai     { background:#fef9c3; color:#854d0e; }
-  .unresolved-reason { color:#6b7280; font-size:.8rem; font-style:italic; }
-  a { color: #2563eb; }
-</style>
-</head>
-<body>
-<h1>Link Report</h1>
-<p class="meta">Root: <code>{{.Root}}</code> &nbsp;·&nbsp; {{len .Links}} links found{{if .BrokenCount}} &nbsp;·&nbsp; <strong style="color:#991b1b">{{.BrokenCount}} broken</strong>{{end}}</p>
-<input type="search" id="q" placeholder="Filter by URL or source file…" oninput="filter()">
-<table id="tbl">
-  <thead>
-    <tr>
-      <th onclick="sort(0)">Type</th>
-      <th onclick="sort(1)">URL</th>
-      <th onclick="sort(2)">Source file</th>
-      {{if hasValidation .Links}}<th onclick="sort(3)">Status</th>{{end}}
-      {{if hasResolution .Links}}<th onclick="sort(4)">Fixed Link</th><th onclick="sort(5)">Strategy</th>{{end}}
-    </tr>
-  </thead>
-  <tbody>
-  {{range .Links}}
-    <tr{{if eq (statusClass .) "broken"}} class="row-broken"{{end}}>
-      <td><span class="badge {{.Type}}">{{.Type}}</span></td>
-      <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
-      <td>{{.Rel}}</td>
-      {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}</td>{{end}}
-      {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}">{{strategyLabel .}}</span>{{end}}</td>{{end}}
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-<script>
-function filter() {
-  const q = document.getElementById('q').value.toLowerCase();
-  document.querySelectorAll('#tbl tbody tr').forEach(r => {
-    r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
-  });
-}
-let sortDir = {};
-function sort(col) {
-  const tbody = document.querySelector('#tbl tbody');
-  const rows = Array.from(tbody.rows);
-  sortDir[col] = !sortDir[col];
-  rows.sort((a, b) => {
-    const v = a.cells[col].textContent.trim().localeCompare(b.cells[col].textContent.trim());
-    return sortDir[col] ? v : -v;
-  });
-  rows.forEach(r => tbody.appendChild(r));
-}
-</script>
-</body>
-</html>
-`))
-
-type reportRow struct {
-	types.Link
-	Rel        string
-	Result     *types.ValidationResult
-	Resolution *types.ResolutionResult
-}
-
-func writeHTMLReport(outPath, root string, links []types.Link, results []types.ValidationResult, resolutions []types.ResolutionResult) error {
-	rows := make([]reportRow, len(links))
-	broken := 0
-	for i, l := range links {
-		rel := l.SourceFile
-		if r, err := filepath.Rel(root, l.SourceFile); err == nil {
-			rel = r
-		}
-		row := reportRow{Link: l, Rel: rel}
-		if i < len(results) {
-			r := results[i]
-			row.Result = &r
-			if !r.Valid && r.Reason != types.ReasonIgnored {
-				broken++
-			}
-		}
-		if i < len(resolutions) {
-			res := resolutions[i]
-			row.Resolution = &res
-		}
-		rows[i] = row
-	}
-
-	f, err := os.Create(outPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return reportTmpl.Execute(f, struct {
-		Root        string
-		Links       []reportRow
-		BrokenCount int
-	}{Root: root, Links: rows, BrokenCount: broken})
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from it.

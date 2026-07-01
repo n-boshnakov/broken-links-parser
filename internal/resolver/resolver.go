@@ -20,29 +20,30 @@ type ResolveOptions struct {
 // Resolve attempts to find a replacement URL for each broken ValidationResult.
 // Valid results and IGNORED results are passed through unchanged.
 func Resolve(results []types.ValidationResult, opts ResolveOptions) []types.ResolutionResult {
+	cache := NewGitCache()
 	out := make([]types.ResolutionResult, len(results))
 	for i, r := range results {
 		if r.Valid || r.Reason == types.ReasonIgnored {
 			out[i] = types.ResolutionResult{ValidationResult: r}
 			continue
 		}
-		out[i] = resolveOne(r, opts)
+		out[i] = resolveOne(r, opts, cache)
 	}
 	return out
 }
 
-func resolveOne(r types.ValidationResult, opts ResolveOptions) types.ResolutionResult {
+func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache) types.ResolutionResult {
 	switch r.Link.Type {
 	case types.LinkTypeRelative, types.LinkTypeAnchor, types.LinkTypeImage:
 		if opts.RepoRoot != "" {
-			return ResolveRelative(r, opts.RepoRoot, opts.NoFetch)
+			return ResolveRelative(r, opts.RepoRoot, opts.NoFetch, cache)
 		}
 	case types.LinkTypeAbsolute:
 		if isGitHubLink(r.Link.URL) {
 			// Try local clone first; keep its result even if unresolved (it carries UnresolvedReason).
 			var cloneResult types.ResolutionResult
 			if opts.ReposDir != "" {
-				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.NoFetch)
+				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.NoFetch, cache)
 				if cloneResult.FixedURL != "" {
 					return cloneResult
 				}

@@ -48,7 +48,7 @@ func findLocalClone(reposDir, owner, repo string) (string, bool) {
 }
 
 // ResolveViaLocalClone resolves a broken absolute GitHub link using a local clone.
-func ResolveViaLocalClone(result types.ValidationResult, reposDir string, noFetch bool) types.ResolutionResult {
+func ResolveViaLocalClone(result types.ValidationResult, reposDir string, noFetch bool, cache *GitCache) types.ResolutionResult {
 	owner, repo, _, filePath, ok := parseGitHubURL(result.Link.URL)
 	if !ok {
 		return types.ResolutionResult{ValidationResult: result}
@@ -64,11 +64,9 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir string, noFetc
 		return types.ResolutionResult{ValidationResult: result}
 	}
 
-	if !noFetch {
-		_ = gitFetch(clonePath)
-	}
+	_ = cache.fetch(clonePath, noFetch)
 
-	logResult, err := gitLog(clonePath, filePath)
+	logResult, err := cache.log(clonePath, filePath)
 	if err != nil || (logResult.newPath == "" && logResult.deletionSHA == "") {
 		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
 	}

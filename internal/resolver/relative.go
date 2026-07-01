@@ -17,47 +17,63 @@ type gitLogResult struct {
 	deletionSHA string // non-empty if file was deleted
 }
 
-var (
-	gitLogCache   = map[string]gitLogResult{}
-	gitLogCacheMu sync.Mutex
-	fetchedRoots  = map[string]bool{}
-	fetchedMu     sync.Mutex
-)
+// GitCache holds per-run git log and fetch state.
+// Create one with NewGitCache() per Resolve call; never share across calls.
+type GitCache struct {
+	logMu    sync.Mutex
+	logCache map[string]gitLogResult
 
-// gitFetch runs `git fetch --quiet origin` in repoRoot once per root per process.
-func gitFetch(repoRoot string) error {
-	fetchedMu.Lock()
-	defer fetchedMu.Unlock()
-	if fetchedRoots[repoRoot] {
+	fetchMu sync.Mutex
+	fetched map[string]struct{} // only roots where fetch succeeded
+}
+
+// NewGitCache returns an empty, ready-to-use GitCache.
+func NewGitCache() *GitCache {
+	return &GitCache{
+		logCache: make(map[string]gitLogResult),
+		fetched:  make(map[string]struct{}),
+	}
+}
+
+// fetch runs `git fetch --quiet origin` in repoRoot at most once per cache lifetime.
+// It only marks the root as fetched when the command succeeds, allowing retries on failure.
+func (c *GitCache) fetch(repoRoot string, noFetch bool) error {
+	if noFetch {
+		return nil
+	}
+	c.fetchMu.Lock()
+	defer c.fetchMu.Unlock()
+	if _, done := c.fetched[repoRoot]; done {
 		return nil
 	}
 	cmd := exec.Command("git", "-C", repoRoot, "fetch", "--quiet", "origin")
 	if out, err := cmd.CombinedOutput(); err != nil {
+		// Do NOT mark as fetched — allow retry on next call.
 		return fmt.Errorf("git fetch in %s: %w\n%s", repoRoot, err, out)
 	}
-	fetchedRoots[repoRoot] = true
+	c.fetched[repoRoot] = struct{}{}
 	return nil
 }
 
-// gitLog queries rename and deletion history for path inside repoRoot.
+// log queries rename and deletion history for path inside repoRoot.
 // Results are cached to avoid redundant subprocess calls within the same run.
-func gitLog(repoRoot, path string) (gitLogResult, error) {
+func (c *GitCache) log(repoRoot, path string) (gitLogResult, error) {
 	key := repoRoot + ":" + path
-	gitLogCacheMu.Lock()
-	if r, ok := gitLogCache[key]; ok {
-		gitLogCacheMu.Unlock()
+	c.logMu.Lock()
+	if r, ok := c.logCache[key]; ok {
+		c.logMu.Unlock()
 		return r, nil
 	}
-	gitLogCacheMu.Unlock()
+	c.logMu.Unlock()
 
 	result, err := runGitLog(repoRoot, path)
 	if err != nil {
 		return gitLogResult{}, err
 	}
 
-	gitLogCacheMu.Lock()
-	gitLogCache[key] = result
-	gitLogCacheMu.Unlock()
+	c.logMu.Lock()
+	c.logCache[key] = result
+	c.logMu.Unlock()
 	return result, nil
 }
 
@@ -96,11 +112,9 @@ func runGitLog(repoRoot, path string) (gitLogResult, error) {
 
 // ResolveRelative attempts to find the correct path for a broken relative link
 // by inspecting the local git history of the repository.
-func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch bool) types.ResolutionResult {
-	if !noFetch {
-		// Best-effort fetch; don't fail resolution if fetch fails (e.g. offline).
-		_ = gitFetch(repoRoot)
-	}
+func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch bool, cache *GitCache) types.ResolutionResult {
+	// Best-effort fetch; don't fail resolution if fetch fails (e.g. offline).
+	_ = cache.fetch(repoRoot, noFetch)
 
 	// Reconstruct the absolute path of the missing target.
 	url := result.Link.URL
@@ -119,7 +133,7 @@ func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch boo
 		return types.ResolutionResult{ValidationResult: result}
 	}
 
-	logResult, err := gitLog(repoRoot, relTarget)
+	logResult, err := cache.log(repoRoot, relTarget)
 	if err != nil || (logResult.newPath == "" && logResult.deletionSHA == "") {
 		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
 	}
@@ -141,7 +155,6 @@ func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch boo
 	}
 
 	// File was deleted — point to the deletion commit.
-	// We need the remote URL to build a commit link; use git remote get-url.
 	remoteURL := getRemoteURL(repoRoot)
 	commitURL := logResult.deletionSHA
 	if remoteURL != "" {

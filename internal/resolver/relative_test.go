@@ -45,22 +45,12 @@ func commit(t *testing.T, dir, msg string) string {
 }
 
 func TestResolveRelative_Rename(t *testing.T) {
-	// Reset caches between tests.
-	gitLogCacheMu.Lock()
-	gitLogCache = map[string]gitLogResult{}
-	gitLogCacheMu.Unlock()
-	fetchedMu.Lock()
-	fetchedRoots = map[string]bool{}
-	fetchedMu.Unlock()
-
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 
-	// Create old.md and commit.
 	_ = os.WriteFile(filepath.Join(dir, "old.md"), []byte("# Old\n"), 0o644)
 	commit(t, dir, "add old.md")
 
-	// Rename to new.md using git mv so git records it as a rename.
 	cmd := exec.Command("git", "-C", dir, "mv", "old.md", "new.md")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git mv: %v\n%s", err, out)
@@ -80,7 +70,7 @@ func TestResolveRelative_Rename(t *testing.T) {
 		Reason: types.ReasonFileNotFound,
 	}
 
-	res := ResolveRelative(result, dir, true) // noFetch=true (no remote)
+	res := ResolveRelative(result, dir, true, NewGitCache())
 	if res.FixedURL == "" {
 		t.Fatal("expected a FixedURL, got empty")
 	}
@@ -96,13 +86,6 @@ func TestResolveRelative_Rename(t *testing.T) {
 }
 
 func TestResolveRelative_Deletion(t *testing.T) {
-	gitLogCacheMu.Lock()
-	gitLogCache = map[string]gitLogResult{}
-	gitLogCacheMu.Unlock()
-	fetchedMu.Lock()
-	fetchedRoots = map[string]bool{}
-	fetchedMu.Unlock()
-
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 
@@ -125,7 +108,7 @@ func TestResolveRelative_Deletion(t *testing.T) {
 		Reason: types.ReasonFileNotFound,
 	}
 
-	res := ResolveRelative(result, dir, true)
+	res := ResolveRelative(result, dir, true, NewGitCache())
 	if res.FixedURL == "" {
 		t.Fatal("expected a FixedURL for deletion, got empty")
 	}
@@ -138,13 +121,6 @@ func TestResolveRelative_Deletion(t *testing.T) {
 }
 
 func TestResolveRelative_Cache(t *testing.T) {
-	gitLogCacheMu.Lock()
-	gitLogCache = map[string]gitLogResult{}
-	gitLogCacheMu.Unlock()
-	fetchedMu.Lock()
-	fetchedRoots = map[string]bool{}
-	fetchedMu.Unlock()
-
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 	_ = os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A file\n"), 0o644)
@@ -163,12 +139,14 @@ func TestResolveRelative_Cache(t *testing.T) {
 		Valid:  false,
 		Reason: types.ReasonFileNotFound,
 	}
-	ResolveRelative(link, dir, true)
-	ResolveRelative(link, dir, true) // second call should hit cache
 
-	gitLogCacheMu.Lock()
-	count := len(gitLogCache)
-	gitLogCacheMu.Unlock()
+	cache := NewGitCache()
+	ResolveRelative(link, dir, true, cache)
+	ResolveRelative(link, dir, true, cache) // second call should hit cache
+
+	cache.logMu.Lock()
+	count := len(cache.logCache)
+	cache.logMu.Unlock()
 	if count != 1 {
 		t.Errorf("expected 1 cache entry, got %d", count)
 	}

@@ -10,14 +10,6 @@ import (
 )
 
 func TestResolve_Integration(t *testing.T) {
-	// Reset caches.
-	gitLogCacheMu.Lock()
-	gitLogCache = map[string]gitLogResult{}
-	gitLogCacheMu.Unlock()
-	fetchedMu.Lock()
-	fetchedRoots = map[string]bool{}
-	fetchedMu.Unlock()
-
 	// Set up a temp git repo with a renamed file.
 	repoDir := t.TempDir()
 	initGitRepo(t, repoDir)
@@ -72,14 +64,6 @@ func TestResolve_Integration(t *testing.T) {
 }
 
 func TestResolve_WaybackFallback(t *testing.T) {
-	// Reset git caches.
-	gitLogCacheMu.Lock()
-	gitLogCache = map[string]gitLogResult{}
-	gitLogCacheMu.Unlock()
-	fetchedMu.Lock()
-	fetchedRoots = map[string]bool{}
-	fetchedMu.Unlock()
-
 	// A broken external (non-GitHub) absolute link.
 	result := types.ValidationResult{
 		Link:       types.Link{URL: "https://example.com/gone-page", Type: types.LinkTypeAbsolute},
