@@ -48,6 +48,17 @@ func CheckURL(rawURL string) bool {
 func headWithFallback(client *http.Client, url, githubToken string) (int, error) {
 	resp, err := doRequest(client, http.MethodHead, url, githubToken)
 	if err != nil {
+		// Some servers violate HTTP/2 by sending a body on a HEAD response.
+		// Go's http2 stack rejects this with "received DATA on a HEAD request".
+		// Fall back to GET, same as we do for 405.
+		if strings.Contains(err.Error(), "received DATA on a HEAD request") {
+			resp2, err2 := doRequest(client, http.MethodGet, url, githubToken)
+			if err2 != nil {
+				return 0, err2
+			}
+			resp2.Body.Close()
+			return resp2.StatusCode, nil
+		}
 		return 0, err
 	}
 	resp.Body.Close()
