@@ -8,12 +8,13 @@ import (
 
 // ResolveOptions controls resolution behaviour.
 type ResolveOptions struct {
-	RepoRoot    string // local root of the scanned repo (for relative link resolution)
-	ReposDir    string // parent directory containing local clones (e.g. ~/Documents/GitHub)
-	GitHubToken string
-	AI          AIConfig
-	EnableAI    bool
-	NoFetch     bool
+	RepoRoot      string // local root of the scanned repo (for relative link resolution)
+	ReposDir      string // parent directory containing local clones (e.g. ~/Documents/GitHub)
+	GitHubToken   string
+	AI            AIConfig
+	EnableAI      bool
+	EnableWayback bool
+	NoFetch       bool
 }
 
 // Resolve attempts to find a replacement URL for each broken ValidationResult.
@@ -61,7 +62,43 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions) types.ResolutionR
 					UnresolvedReason: types.UnresolvedBotBlocked,
 				}
 			}
-			return ResolveViaAI(r, opts.AI)
+
+			var wctx WaybackContext
+
+			if opts.EnableWayback {
+				// Fetch Wayback snapshot for context enrichment.
+				snapURL, title, excerpt, found := FetchWaybackSnapshot(r.Link.URL)
+				if found {
+					wctx.SnapshotURL = snapURL
+					wctx.Title = title
+					wctx.Excerpt = excerpt
+				}
+				// Check if the parent site is alive (only for 404s).
+				if r.StatusCode == 404 || r.Reason == types.ReasonHTTPError {
+					if parentURL, live := checkParentSite(r.Link.URL); live {
+						wctx.ParentURL = parentURL
+					}
+				}
+			}
+
+			res := ResolveViaAI(r, opts.AI, wctx)
+
+			// If AI found nothing and we have a Wayback snapshot, use it as fallback.
+			if res.FixedURL == "" && wctx.SnapshotURL != "" {
+				return types.ResolutionResult{
+					ValidationResult:  r,
+					FixedURL:          wctx.SnapshotURL,
+					Strategy:          types.StrategyWaybackAI,
+					Confidence:        types.ConfidenceLow,
+					IsWaybackFallback: true,
+				}
+			}
+
+			// If AI succeeded with Wayback context active, label the strategy accordingly.
+			if res.FixedURL != "" && opts.EnableWayback && wctx.SnapshotURL != "" {
+				res.Strategy = types.StrategyWaybackAI
+			}
+			return res
 		} else {
 			return types.ResolutionResult{
 				ValidationResult: r,

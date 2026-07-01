@@ -62,16 +62,16 @@ func (c AIConfig) isOpenAICompatible() bool {
 }
 
 // ResolveViaAI asks the configured AI to suggest replacements for an unresolved external link.
-func ResolveViaAI(result types.ValidationResult, cfg AIConfig) types.ResolutionResult {
+func ResolveViaAI(result types.ValidationResult, cfg AIConfig, wctx WaybackContext) types.ResolutionResult {
 	if cfg.isOpenAICompatible() {
-		return resolveViaOpenAI(result, cfg)
+		return resolveViaOpenAI(result, cfg, wctx)
 	}
-	return resolveViaAnthropic(result, cfg)
+	return resolveViaAnthropic(result, cfg, wctx)
 }
 
 // ── Anthropic native API ──────────────────────────────────────────────────────
 
-func resolveViaAnthropic(result types.ValidationResult, cfg AIConfig) types.ResolutionResult {
+func resolveViaAnthropic(result types.ValidationResult, cfg AIConfig, wctx WaybackContext) types.ResolutionResult {
 	// ponytail: BaseURL may be overridden in tests; production always uses anthropicAPIURL
 	apiURL := anthropicAPIURL
 	if cfg.BaseURL != "" {
@@ -90,7 +90,7 @@ func resolveViaAnthropic(result types.ValidationResult, cfg AIConfig) types.Reso
 		"max_tokens":  512,
 		"tools":       []map[string]interface{}{candidateTool()},
 		"tool_choice": map[string]string{"type": "auto"},
-		"messages":    []map[string]string{{"role": "user", "content": buildPrompt(result.Link)}},
+		"messages":    []map[string]string{{"role": "user", "content": buildPrompt(result.Link, wctx)}},
 	}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -127,7 +127,7 @@ func resolveViaAnthropic(result types.ValidationResult, cfg AIConfig) types.Reso
 
 // ── OpenAI-compatible API (LiteLLM, Azure, etc.) ─────────────────────────────
 
-func resolveViaOpenAI(result types.ValidationResult, cfg AIConfig) types.ResolutionResult {
+func resolveViaOpenAI(result types.ValidationResult, cfg AIConfig, wctx WaybackContext) types.ResolutionResult {
 	if _, err := url.ParseRequestURI(result.Link.URL); err != nil {
 		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedSourceMalformed}
 	}
@@ -150,7 +150,7 @@ func resolveViaOpenAI(result types.ValidationResult, cfg AIConfig) types.Resolut
 			},
 		},
 		"tool_choice": "required",
-		"messages":    []map[string]string{{"role": "user", "content": buildPrompt(result.Link)}},
+		"messages":    []map[string]string{{"role": "user", "content": buildPrompt(result.Link, wctx)}},
 	}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -267,6 +267,11 @@ func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types
 		if _, err := url.ParseRequestURI(c.URL); err != nil {
 			continue
 		}
+		// Reject Wayback Machine URLs — the AI sometimes suggests archive.org as a
+		// "replacement" but those are archive/search pages, not live content.
+		if strings.Contains(c.URL, "web.archive.org") || strings.Contains(c.URL, "archive.org/web") {
+			continue
+		}
 		if validator.CheckURL(c.URL) {
 			confidence := types.ConfidenceLow
 			if c.Confidence >= 0.7 {
@@ -283,14 +288,23 @@ func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types
 	return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedAINoValidCandidate}
 }
 
-func buildPrompt(link types.Link) string {
+func buildPrompt(link types.Link, wctx WaybackContext) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("The following URL returns an HTTP error when accessed: %s\n", link.URL))
 	if link.Text != "" {
 		sb.WriteString(fmt.Sprintf("The link text is: %q\n", link.Text))
 	}
-	sb.WriteString(fmt.Sprintf("It appears in the documentation file: %s\n\n", link.SourceFile))
-	sb.WriteString("Find the current URL for this specific content — not a homepage or general page on the same domain. ")
+	sb.WriteString(fmt.Sprintf("It appears in the documentation file: %s\n", link.SourceFile))
+	if wctx.Title != "" {
+		sb.WriteString(fmt.Sprintf("An archived version of this page had the title: %q\n", wctx.Title))
+	}
+	if wctx.Excerpt != "" {
+		sb.WriteString(fmt.Sprintf("Its content began: %s\n", wctx.Excerpt))
+	}
+	if wctx.ParentURL != "" {
+		sb.WriteString(fmt.Sprintf("The parent site is still live at %s — the content may have moved there.\n", wctx.ParentURL))
+	}
+	sb.WriteString("\nFind the current URL for this specific content — not a homepage or general page on the same domain. ")
 	sb.WriteString("The replacement should point to the same topic or resource as the original link. ")
 	sb.WriteString("You must call the report_candidates tool with up to 3 candidates, each with a confidence score (0.0–1.0). ")
 	sb.WriteString("If you have no specific candidates, call report_candidates with an empty array — do not suggest generic homepages or archive URLs.")

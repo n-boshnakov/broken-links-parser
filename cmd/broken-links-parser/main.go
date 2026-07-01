@@ -96,20 +96,25 @@ var extractCmd = &cobra.Command{
 			reposDir, _ := cmd.Flags().GetString("repos-dir")
 			noFetch, _ := cmd.Flags().GetBool("no-fetch")
 			enableAI, _ := cmd.Flags().GetBool("ai")
+			enableWayback, _ := cmd.Flags().GetBool("wayback")
 			aiCfg := resolver.AIConfigFromEnv()
 			if enableAI && aiCfg.APIKey == "" {
 				fmt.Fprintln(os.Stderr, "Warning: --ai set but AI_API_KEY not found in environment or .env")
 			} else if enableAI {
 				fmt.Printf("AI resolution enabled (model: %s, openai-compat: %v)\n", aiCfg.Model, aiCfg.BaseURL != "")
 			}
+			if enableWayback {
+				fmt.Println("Wayback Machine enrichment enabled.")
+			}
 			fmt.Println("Resolving broken links…")
 			resolutions = resolver.Resolve(results, resolver.ResolveOptions{
-				RepoRoot:    rootDir,
-				ReposDir:    reposDir,
-				GitHubToken: os.Getenv("GITHUB_TOKEN"),
-				AI:          aiCfg,
-				EnableAI:    enableAI,
-				NoFetch:     noFetch,
+				RepoRoot:      rootDir,
+				ReposDir:      reposDir,
+				GitHubToken:   os.Getenv("GITHUB_TOKEN"),
+				AI:            aiCfg,
+				EnableAI:      enableAI,
+				EnableWayback: enableWayback,
+				NoFetch:       noFetch,
 			})
 			resolved := 0
 			for _, r := range resolutions {
@@ -145,6 +150,7 @@ func init() {
 	extractCmd.Flags().Bool("no-fetch", false, "Skip git fetch when using local clones for resolution")
 	extractCmd.Flags().Bool("ai", false, "Use Claude AI as last-resort resolver for external links (requires ANTHROPIC_API_KEY)")
 	extractCmd.Flags().Bool("apply-ai", false, "Allow AI-suggested fixes to be applied by the repair stage")
+	extractCmd.Flags().Bool("wayback", false, "Enrich AI resolution with Wayback Machine context and use as fallback (requires --ai)")
 	rootCmd.AddCommand(extractCmd)
 }
 
@@ -207,6 +213,9 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Resolution.Deleted {
 			return "Deleted in commit: " + r.Resolution.FixedURL
 		}
+		if r.Resolution.IsWaybackFallback {
+			return "No live replacement found — see archived version: " + r.Resolution.FixedURL
+		}
 		return r.Resolution.FixedURL
 	},
 	"unresolvedReason": func(r reportRow) string {
@@ -246,8 +255,11 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Resolution == nil || r.Resolution.Strategy == "" {
 			return ""
 		}
-		if r.Resolution.Strategy == types.StrategyAI {
+		switch r.Resolution.Strategy {
+		case types.StrategyAI:
 			return "AI (low confidence)"
+		case types.StrategyWaybackAI:
+			return "Wayback + AI"
 		}
 		return r.Resolution.Strategy
 	},
@@ -255,7 +267,8 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Resolution == nil {
 			return ""
 		}
-		if r.Resolution.Strategy == types.StrategyAI {
+		switch r.Resolution.Strategy {
+		case types.StrategyAI, types.StrategyWaybackAI:
 			return "strategy-ai"
 		}
 		return "strategy-normal"

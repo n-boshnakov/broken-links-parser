@@ -70,3 +70,34 @@ func TestResolve_Integration(t *testing.T) {
 		t.Errorf("external unresolved: expected empty FixedURL, got %q", res[2].FixedURL)
 	}
 }
+
+func TestResolve_WaybackFallback(t *testing.T) {
+	// Reset git caches.
+	gitLogCacheMu.Lock()
+	gitLogCache = map[string]gitLogResult{}
+	gitLogCacheMu.Unlock()
+	fetchedMu.Lock()
+	fetchedRoots = map[string]bool{}
+	fetchedMu.Unlock()
+
+	// A broken external (non-GitHub) absolute link.
+	result := types.ValidationResult{
+		Link:       types.Link{URL: "https://example.com/gone-page", Type: types.LinkTypeAbsolute},
+		Valid:      false,
+		Reason:     types.ReasonHTTPError,
+		StatusCode: 404,
+	}
+
+	// With Wayback enabled but no AI key, EnableAI=false — no fallback since AI not called.
+	res := Resolve([]types.ValidationResult{result}, ResolveOptions{
+		EnableWayback: true,
+		EnableAI:      false,
+	})
+	if len(res) != 1 {
+		t.Fatalf("expected 1 result")
+	}
+	// No AI key → EXTERNAL_NO_AI reason (Wayback enrichment only runs when AI is also enabled).
+	if res[0].UnresolvedReason != types.UnresolvedExternalNoAI {
+		t.Errorf("UnresolvedReason = %q, want EXTERNAL_NO_AI", res[0].UnresolvedReason)
+	}
+}

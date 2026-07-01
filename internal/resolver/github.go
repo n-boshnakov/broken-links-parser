@@ -206,8 +206,19 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 	matches := findAllPaths(index, fileName, filePath)
 	switch len(matches) {
 	case 0:
-		// Not in current tree — check if it was deleted.
+		// Not in current tree — check if the last commit touching this path was a rename or deletion.
 		if sha := findDeletionCommit(client, owner, repo, filePath, token); sha != "" {
+			// Inspect the commit: if it's a rename, return the new path as the fix.
+			if newPath := findRenamedPath(client, owner, repo, sha, filePath, token); newPath != "" {
+				fixedURL := rebuildGitHubURL(result.Link.URL, newPath)
+				return types.ResolutionResult{
+					ValidationResult: result,
+					FixedURL:         fixedURL,
+					Strategy:         types.StrategyGitHubAPI,
+					Confidence:       types.ConfidenceHigh,
+				}
+			}
+			// Commit exists but was a deletion, not a rename.
 			fixedURL := fmt.Sprintf("https://github.com/%s/%s/commit/%s", owner, repo, sha)
 			return types.ResolutionResult{
 				ValidationResult: result,

@@ -50,7 +50,7 @@ func TestResolveViaAI(t *testing.T) {
 			Valid:  false,
 			Reason: types.ReasonHTTPError,
 		}
-		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL})
+		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL}, WaybackContext{})
 		// High-confidence candidate (highSrv) returns 404, so low-confidence (lowSrv) should be accepted.
 		if res.FixedURL != lowSrv.URL {
 			t.Errorf("FixedURL = %q, want %q", res.FixedURL, lowSrv.URL)
@@ -79,7 +79,7 @@ func TestResolveViaAI(t *testing.T) {
 			Link:  types.Link{URL: "https://gone.example.com", Type: types.LinkTypeAbsolute},
 			Valid: false,
 		}
-		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL})
+		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL}, WaybackContext{})
 		if res.FixedURL != "" {
 			t.Errorf("expected empty FixedURL, got %q", res.FixedURL)
 		}
@@ -99,7 +99,7 @@ func TestResolveViaAI(t *testing.T) {
 			Link:  types.Link{URL: "https://example.com/gone", Type: types.LinkTypeAbsolute},
 			Valid: false,
 		}
-		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL})
+		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL}, WaybackContext{})
 		if res.UnresolvedReason != types.UnresolvedAIFailed {
 			t.Errorf("UnresolvedReason = %q, want AI_FAILED", res.UnresolvedReason)
 		}
@@ -117,7 +117,7 @@ func TestResolveViaAI(t *testing.T) {
 			Link:  types.Link{URL: "not a url %%", Type: types.LinkTypeAbsolute},
 			Valid: false,
 		}
-		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL})
+		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL}, WaybackContext{})
 		if called {
 			t.Error("API should not be called for malformed source URL")
 		}
@@ -136,7 +136,7 @@ func TestResolveViaAI(t *testing.T) {
 			Link:  types.Link{URL: "https://example.com/page", Type: types.LinkTypeAbsolute},
 			Valid: false,
 		}
-		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL})
+		res := resolveViaAnthropic(result, AIConfig{APIKey: "test-key", Model: defaultModel, BaseURL: aiSrv.URL}, WaybackContext{})
 		if res.UnresolvedReason != types.UnresolvedAIFailed {
 			t.Errorf("UnresolvedReason = %q, want AI_FAILED", res.UnresolvedReason)
 		}

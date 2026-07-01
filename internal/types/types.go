@@ -16,6 +16,7 @@ const (
 	StrategyLocalClone = "local-clone"
 	StrategyGitHubAPI  = "github-api"
 	StrategyAI         = "ai"
+	StrategyWaybackAI  = "wayback+ai"
 )
 
 // Confidence constants for ResolutionResult.
@@ -44,11 +45,12 @@ const (
 // ResolutionResult is the outcome of attempting to find a replacement for a broken link.
 type ResolutionResult struct {
 	ValidationResult
-	FixedURL         string // empty if unresolved
-	Strategy         string // one of the Strategy* constants
-	Confidence       string // ConfidenceHigh or ConfidenceLow
-	Deleted          bool   // true when FixedURL points to a deletion commit rather than a replacement
-	UnresolvedReason string // one of the Unresolved* constants, set when FixedURL is empty
+	FixedURL           string // empty if unresolved
+	Strategy           string // one of the Strategy* constants
+	Confidence         string // ConfidenceHigh or ConfidenceLow
+	Deleted            bool   // true when FixedURL points to a deletion commit rather than a replacement
+	UnresolvedReason   string // one of the Unresolved* constants, set when FixedURL is empty
+	IsWaybackFallback  bool   // true when FixedURL is a Wayback archive URL used as last-resort
 }
 
 // Reason codes for ValidationResult.

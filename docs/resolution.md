@@ -72,4 +72,21 @@ Requires `ANTHROPIC_API_KEY` in `.env` or the environment.
 | `--repos-dir` | — | Directory containing local repo clones |
 | `--no-fetch` | `false` | Skip `git fetch` on local clones |
 | `--ai` | `false` | Enable AI-assisted resolution for external links |
+| `--wayback` | `false` | Enrich AI prompts with Wayback Machine context; use archive as fallback (requires `--ai`) |
 | `--apply-ai` | `false` | Allow AI suggestions to be applied by the repair stage |
+
+## Wayback Machine enrichment (`--wayback`)
+
+When `--wayback` is set alongside `--ai`, the resolver enhances AI prompts with archived page context before calling the model.
+
+**What it does for each broken external link:**
+
+1. Queries the Wayback CDX API for the closest archived snapshot (5 s timeout)
+2. If a usable snapshot exists (2xx archived status), fetches it and extracts the page title and first ~500 chars of body text (3 s timeout)
+3. Checks whether the root domain is still alive (`http://omerio.com` for a broken post URL) — if so, tells the AI the content may have moved there
+4. Injects this context into the AI prompt so the model knows *what* the page was about
+5. If the AI finds no valid live replacement, the Wayback snapshot URL is returned as a last-resort fallback with label `"No live replacement found — see archived version"`
+
+**Cost:** Up to ~8 s latency per broken external link. Skipped gracefully on timeout or unavailability.
+
+**When it helps most:** Dead personal blogs, small docs sites, moved resources. Less useful for large platforms where other strategies already apply.
