@@ -1,17 +1,22 @@
 # Link Resolution
 
-The resolver is the third pipeline stage. It takes broken links from the validator and attempts to find the correct replacement URL using local git history, GitHub API, or AI.
+The resolver is the third pipeline stage. It takes broken links from the validator and attempts to find the correct replacement URL using local git history, the GitHub API, AI, or the Wayback Machine.
 
 ## Strategy order
 
 | Strategy | When used | Confidence |
 |----------|-----------|------------|
 | `git-history` | Broken relative link; local repo scanned for renames/deletions | High |
-| `local-clone` | Broken GitHub link; target repo found under `--repos-dir` | High |
-| `github-api` | Broken GitHub link; no local clone available | High |
-| `ai` | Any external broken link; `--ai` flag set; all other strategies failed | Low |
+| `local-clone` | Broken absolute GitHub link; target repo found under `--repos-dir` | High |
+| `github-api` | Broken absolute GitHub link; no local clone available | High |
+| `wayback+ai` | External non-GitHub link; `--ai` and `--wayback` set; Wayback snapshot used to enrich the AI prompt | Low |
+| `ai` | External non-GitHub link; `--ai` set; all other strategies failed | Low |
+
+For GitHub links, the resolver checks rename history before concluding a file was deleted — a case-only rename (e.g. `FAQ.md` → `faq.md`) is correctly resolved as a rename, not a deletion.
 
 ## Usage
+
+Full pipeline with AI and Wayback enrichment:
 
 ```sh
 go run ./cmd/broken-links-parser/ extract \
@@ -19,11 +24,13 @@ go run ./cmd/broken-links-parser/ extract \
   --dirs website/documentation \
   --validate \
   --resolve \
+  --ai \
+  --wayback \
   --repos-dir ~/Documents/GitHub \
   --html reports/report.html
 ```
 
-The report gains **Fixed Link** and **Strategy** columns. AI suggestions are shown with a yellow badge.
+The report gains **Fixed Link** and **Strategy** columns.
 
 ## Local clone detection
 
@@ -31,38 +38,77 @@ When `--repos-dir` is set, the resolver checks for the target repo at:
 1. `<repos-dir>/<owner>/<repo>` (e.g. `~/Documents/GitHub/gardener/gardener`)
 2. `<repos-dir>/<repo>` (e.g. `~/Documents/GitHub/gardener`)
 
-If found, it runs `git log` locally — faster and rate-limit-free.
+If found, it runs `git log` locally — faster and rate-limit-free. Before scanning, the tool runs `git fetch --quiet origin` to ensure the history is current. Skip with `--no-fetch` if you're offline or know the clone is up to date.
 
-Before scanning, the tool runs `git fetch --quiet origin` to ensure the history is current. Skip with `--no-fetch` if you're offline or know the clone is up to date.
+## AI resolution (`--ai`)
+
+When `--ai` is set, the resolver uses an AI model as a last resort for external non-HTTP links that programmatic strategies couldn't resolve.
+
+- Asks for up to 3 candidate URLs with confidence scores (0.0–1.0)
+- Sorts candidates by confidence and HTTP-validates each in order
+- Returns the first candidate that responds with HTTP 2xx
+- Rejects Wayback Machine URLs and other archive links as candidates
+- 403/429 responses (bot-blocked sites) skip AI entirely — the page likely works in a browser
+
+Requires `AI_API_KEY` in `.env`. Supports both Anthropic's API and any OpenAI-compatible proxy (LiteLLM, Azure OpenAI, etc.) via `AI_BASE_URL`.
+
+## Wayback Machine enrichment (`--wayback`)
+
+When `--wayback` is set alongside `--ai`, the resolver enriches the AI prompt with archived page context before calling the model.
+
+**What it does for each broken external link:**
+
+1. Queries the Wayback CDX API for the closest archived snapshot (5 s timeout)
+2. If a usable snapshot exists (2xx archived status), fetches it and extracts the page title and first ~500 chars of body text (3 s timeout)
+3. Checks whether the root domain is still alive — if so, tells the AI the content may have moved there
+4. Injects all context into the AI prompt so the model knows *what* the page was about, not just its URL
+5. If the AI finds no valid live replacement, the Wayback snapshot URL is returned as a last-resort fallback, labelled `"No live replacement found — see archived version"`
+
+**Cost:** Up to ~8 s additional latency per broken external link. Skipped gracefully on timeout or unavailability.
+
+**When it helps most:** Dead personal blogs, small documentation sites, moved resources. Less useful for large platforms (GitHub, Wikipedia) where other strategies already apply first.
 
 ## Unresolved reason codes
 
-When no fix can be found, the report shows an italicised reason in the Fixed Link column explaining why.
+When no fix can be found, the report shows an italicised reason in the Fixed Link column.
 
-| Code | Meaning | How to fix |
-|------|---------|------------|
-| `No history found` | The file has no traceable history — it may never have existed at that path, or the link was a typo | Check the URL manually |
-| `API blocked (token policy)` | The GitHub API returned 403. Most commonly caused by a fine-grained PAT whose lifetime exceeds the limit set by the repo's organisation (e.g. SAP enterprise enforces ≤366 days). Classic PATs are not subject to this restriction. | Switch to a classic PAT with `public_repo` scope at github.com/settings/tokens |
-| `API rate limited` | The GitHub API rate limit was exhausted (60 req/hr unauthenticated, 5000/hr authenticated) after retries | Add or rotate `GITHUB_TOKEN` in `.env`; re-run with lower `--concurrency` |
-| `Repo not found or private` | The GitHub API returned 404 — the org/repo may have been deleted, renamed, or made private | Check if the repo still exists; update the link manually |
-| `Ambiguous (multiple matches)` | Multiple files with the same name exist in the current repo tree and commit history could not identify the exact rename target | Check the repo manually to determine which file is the intended target |
-| `External link (enable --ai)` | The link points to a non-GitHub URL and `--ai` is not enabled, so no programmatic strategy is available | Re-run with `--ai` to attempt AI-assisted resolution, or fix manually |
-| `AI returned no suggestion` | `--ai` was enabled but Claude returned no candidates | Check the URL manually |
-| `AI suggestions did not pass validation` | Claude returned candidates but all failed HTTP validation | The candidates are visible in the report; check them manually |
-| `AI returned an invalid URL` | Claude returned a syntactically malformed URL | Try enabling a stronger model |
-| `Source URL is malformed` | The original broken URL is itself syntactically invalid — AI resolution was skipped | Fix the URL syntax in the source file directly |
+| Reason | Meaning | How to fix |
+|--------|---------|------------|
+| `No history found` | File not in git history — may never have existed at that path, or a typo | Check the URL manually |
+| `API blocked (token policy)` | GitHub API returned 403 — fine-grained PAT lifetime exceeds org policy (SAP: ≤366 days) | Switch to a classic PAT with `public_repo` scope |
+| `API rate limited` | GitHub API rate limit exhausted after retries | Rotate `GITHUB_TOKEN`; re-run with lower `--concurrency` |
+| `Repo not found or private` | GitHub API returned 404 — repo deleted, renamed, or made private | Check manually |
+| `Ambiguous (multiple matches)` | Multiple files share the same name; commit history couldn't identify the exact rename | Check the repo manually |
+| `External link (enable --ai)` | Non-GitHub URL and `--ai` not set | Re-run with `--ai`, or fix manually |
+| `Bot-blocked (403/429) — likely works in browser` | Server blocks automated requests; page probably exists | Verify in a browser |
+| `AI returned no suggestion` | AI returned no candidates | Check manually; resource may be gone |
+| `AI suggestions did not pass validation` | AI returned candidates but all failed HTTP validation | Inspect the report manually |
+| `AI returned an invalid URL` | AI returned a syntactically malformed URL | Try a stronger model |
+| `AI auth error (check AI_API_KEY)` | AI API returned 401/403 — key missing, invalid, or expired | Check `AI_API_KEY` in `.env` |
+| `Source URL is malformed` | The broken URL is itself syntactically invalid | Fix the URL syntax in the source file |
+
+## AI provider configuration
+
+The tool supports both Anthropic's native API and any OpenAI-compatible proxy.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_API_KEY` | — | API key for the AI provider |
+| `AI_BASE_URL` | — | Leave unset for Anthropic; set to proxy base URL for LiteLLM/Azure/etc. |
+| `AI_MODEL` | `claude-haiku-4-5-20251001` (Anthropic) / `gpt-4o-mini` (proxy) | Model to use |
+
+Example for the SAP LiteLLM proxy:
+```
+AI_API_KEY=sk-your-key
+AI_BASE_URL=https://models.answering-machine.utility.gardener.cloud.sap
+AI_MODEL=claude-sonnet-4-6
+```
 
 ### Note on GitHub token types
 
-Fine-grained PATs (the newer token format) are subject to organisation-level policies. SAP's enterprise, for example, forbids tokens with a lifetime over 366 days. This causes 403 errors on any `gardener/*` or other SAP-hosted public repo.
+Fine-grained PATs are subject to organisation-level policies — SAP's enterprise forbids tokens with lifetime over 366 days, causing 403 errors on `gardener/*` repos.
 
-**Recommendation:** Use a classic PAT (`github.com/settings/tokens → Tokens (classic)`) with `public_repo` scope. Classic PATs have no organisation-enforced expiry and work across all public repos.
-
-
-
-AI uses the Claude API and is opt-in only. It is never called unless `--ai` is set. Suggestions are marked with `Confidence: low` and are not auto-applied unless `--apply-ai` is also set (reserved for the repair stage).
-
-Requires `ANTHROPIC_API_KEY` in `.env` or the environment.
+**Recommendation:** Use a classic PAT (`github.com/settings/tokens → Tokens (classic)`) with `public_repo` scope. No organisation-enforced expiry, works across all public repos.
 
 ## Flags
 
@@ -73,20 +119,4 @@ Requires `ANTHROPIC_API_KEY` in `.env` or the environment.
 | `--no-fetch` | `false` | Skip `git fetch` on local clones |
 | `--ai` | `false` | Enable AI-assisted resolution for external links |
 | `--wayback` | `false` | Enrich AI prompts with Wayback Machine context; use archive as fallback (requires `--ai`) |
-| `--apply-ai` | `false` | Allow AI suggestions to be applied by the repair stage |
-
-## Wayback Machine enrichment (`--wayback`)
-
-When `--wayback` is set alongside `--ai`, the resolver enhances AI prompts with archived page context before calling the model.
-
-**What it does for each broken external link:**
-
-1. Queries the Wayback CDX API for the closest archived snapshot (5 s timeout)
-2. If a usable snapshot exists (2xx archived status), fetches it and extracts the page title and first ~500 chars of body text (3 s timeout)
-3. Checks whether the root domain is still alive (`http://omerio.com` for a broken post URL) — if so, tells the AI the content may have moved there
-4. Injects this context into the AI prompt so the model knows *what* the page was about
-5. If the AI finds no valid live replacement, the Wayback snapshot URL is returned as a last-resort fallback with label `"No live replacement found — see archived version"`
-
-**Cost:** Up to ~8 s latency per broken external link. Skipped gracefully on timeout or unavailability.
-
-**When it helps most:** Dead personal blogs, small docs sites, moved resources. Less useful for large platforms where other strategies already apply.
+| `--apply-ai` | `false` | Allow AI suggestions to be applied by the repair stage (reserved for repair stage) |

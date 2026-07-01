@@ -1,6 +1,6 @@
 # Link Extraction
 
-The extractor is the first stage of the pipeline. It walks `.md` and `.html` files in a repository and returns every link it finds, along with its type and the byte offset of the URL in the source file (used later by the repair stage).
+The extractor is the first pipeline stage. It walks `.md` and `.html` files in a repository and returns every link it finds, along with its type, the anchor/alt text, and the byte offset of the URL in the source file (used later by the repair stage).
 
 ## Link types
 
@@ -11,9 +11,22 @@ The extractor is the first stage of the pipeline. It walks `.md` and `.html` fil
 | `anchor` | `[see below](#installation)` |
 | `image` | `![diagram](./images/arch.png)` |
 
+HTML files (`.html`) are also scanned: `<a href>` and `<img src>` attributes are extracted, including `<a>` inner text and `<img alt>` text.
+
 Reference-style Markdown links (`[text][ref]` + `[ref]: url`) are resolved and emitted as regular links pointing to the definition line.
 
 Links inside fenced code blocks and inline code spans are ignored.
+
+## Link text
+
+For every link, the extractor captures the anchor or alt text alongside the URL:
+
+- Markdown inline: `[Kubernetes concepts](url)` → `Text: "Kubernetes concepts"`
+- Markdown image: `![architecture diagram](url)` → `Text: "architecture diagram"`
+- HTML anchor: `<a href="url">Click here</a>` → `Text: "Click here"`
+- HTML image: `<img src="url" alt="logo">` → `Text: "logo"`
+
+This text is passed to the AI resolver as context when suggesting replacements for broken links.
 
 ## Usage
 
