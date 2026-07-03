@@ -170,11 +170,20 @@ func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch boo
 	}
 }
 
+// GetRemoteURL returns the canonical remote URL for a git repo.
+// Prefers "upstream" over "origin" so forks return the parent repo URL.
+func GetRemoteURL(repoRoot string) string {
+	return getRemoteURL(repoRoot)
+}
+
 func getRemoteURL(repoRoot string) string {
-	cmd := exec.Command("git", "-C", repoRoot, "remote", "get-url", "origin")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
+	// Prefer "upstream" (canonical repo) over "origin" (may be a fork).
+	for _, remote := range []string{"upstream", "origin"} {
+		cmd := exec.Command("git", "-C", repoRoot, "remote", "get-url", remote)
+		out, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
 	}
-	return strings.TrimSpace(string(out))
+	return ""
 }

@@ -2,9 +2,11 @@ package pipeline
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/n-boshnakov/broken-links-parser/internal/docforge"
 	"github.com/n-boshnakov/broken-links-parser/internal/extractor"
 	"github.com/n-boshnakov/broken-links-parser/internal/resolver"
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
@@ -17,6 +19,10 @@ type Options struct {
 	Root    string
 	Dirs    []string
 	Verbose bool
+
+	// Docforge distributed documentation
+	DocforgeManifest string // path to root docforge manifest YAML; empty = disabled
+	DocforgeStrict   bool   // when true, flag links valid on disk but not in the manifest
 
 	// Validation
 	Validate       bool
@@ -36,6 +42,9 @@ type Options struct {
 
 	// Output
 	HTMLPath string
+
+	// OnProgress is called after each link is validated. Passed through to ValidateOptions.
+	OnProgress func(n, total int)
 }
 
 // Result holds the outputs of a completed pipeline run.
@@ -44,26 +53,58 @@ type Result struct {
 	Links       []types.Link
 	Validations []types.ValidationResult
 	Resolutions []types.ResolutionResult
+	SourceMap   docforge.SourceMap // nil when no docforge manifest was provided
 }
 
 // Extract runs only the extraction stage.
-func Extract(opts Options) ([]types.Link, error) {
-	return extractor.Extract(opts.Root, opts.Dirs)
+// When opts.DocforgeManifest is set, it also extracts links from remote-sourced
+// files available in local clones under opts.ReposDir.
+// Returns extracted links and the parsed SourceMap (nil if no manifest).
+func Extract(opts Options) ([]types.Link, docforge.SourceMap, error) {
+	links, err := extractor.Extract(opts.Root, opts.Dirs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if opts.DocforgeManifest == "" {
+		return links, nil, nil
+	}
+
+	sm, err := docforge.ParseManifest(opts.DocforgeManifest, opts.ReposDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing docforge manifest: %w", err)
+	}
+
+	// Scan each sourced file that has a local copy available.
+	for _, entry := range sm {
+		if entry.LocalFilePath == "" {
+			continue
+		}
+		sourced, err := extractor.ExtractFile(entry.LocalFilePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "docforge: skipping %s: %v\n", entry.LocalFilePath, err)
+			continue
+		}
+		for i := range sourced {
+			sourced[i].SourceRepo = entry.RepoLocalClone
+		}
+		links = append(links, sourced...)
+	}
+
+	return links, sm, nil
 }
 
 // Validate runs only the validation stage against the provided links.
-// It loads ignore patterns from the repo root's .linkignore and the IgnoreFile option.
-func Validate(links []types.Link, opts Options) ([]types.ValidationResult, error) {
+// sm is the SourceMap from Extract; pass nil when no manifest was used.
+func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.ValidationResult, error) {
 	patterns := append([]string(nil), opts.IgnorePatterns...)
 
-	// Auto-load .linkignore from the scanned repo root.
 	if filePatterns, err := validator.LoadIgnoreFile(filepath.Join(opts.Root, ".linkignore")); err != nil {
 		return nil, fmt.Errorf("reading .linkignore: %w", err)
 	} else {
 		patterns = append(patterns, filePatterns...)
 	}
 
-	// Apply additional ignore file if provided.
 	if opts.IgnoreFile != "" {
 		filePatterns, err := validator.LoadIgnoreFile(opts.IgnoreFile)
 		if err != nil {
@@ -81,12 +122,29 @@ func Validate(links []types.Link, opts Options) ([]types.ValidationResult, error
 		concurrency = 5
 	}
 
-	return validator.Validate(links, validator.ValidateOptions{
+	vopts := validator.ValidateOptions{
 		Concurrency:    concurrency,
 		Timeout:        timeout,
 		IgnorePatterns: patterns,
 		GitHubToken:    opts.GitHubToken,
-	}), nil
+		RepoRoot:       opts.Root,
+		OnProgress:     opts.OnProgress,
+	}
+
+	// Wire docforge strict mode when a manifest was provided.
+	if opts.DocforgeStrict && sm != nil {
+		vopts.DocforgeStrict = true
+		// Build a SourceMapper from the SourceMap's local file paths.
+		var localPaths []string
+		for _, entry := range sm {
+			if entry.LocalFilePath != "" {
+				localPaths = append(localPaths, entry.LocalFilePath)
+			}
+		}
+		vopts.SourceMap = validator.NewSourceMapper(localPaths)
+	}
+
+	return validator.Validate(links, vopts), nil
 }
 
 // Resolve runs only the resolution stage against the provided validation results.
@@ -105,15 +163,15 @@ func Resolve(validations []types.ValidationResult, opts Options) []types.Resolut
 // Run executes all configured stages in sequence and returns the combined result.
 // It is silent — callers handle progress output.
 func Run(opts Options) (*Result, error) {
-	links, err := Extract(opts)
+	links, sm, err := Extract(opts)
 	if err != nil {
 		return nil, err
 	}
 
-	result := &Result{Links: links}
+	result := &Result{Links: links, SourceMap: sm}
 
 	if opts.Validate {
-		validations, err := Validate(links, opts)
+		validations, err := Validate(links, opts, sm)
 		if err != nil {
 			return nil, err
 		}

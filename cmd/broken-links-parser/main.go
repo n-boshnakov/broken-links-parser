@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -38,9 +39,10 @@ var extractCmd = &cobra.Command{
 	Short: "Extract all links from a repository and print a summary",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		opts := buildOptions(cmd)
+		runStart := time.Now()
 
 		// Stage 1: Extract
-		links, err := pipeline.Extract(opts)
+		links, sourceMap, err := pipeline.Extract(opts)
 		if err != nil {
 			return err
 		}
@@ -59,8 +61,28 @@ var extractCmd = &cobra.Command{
 			if opts.GitHubToken != "" {
 				fmt.Println("GitHub token detected — authenticated requests will be used for github.com URLs.")
 			}
-			fmt.Printf("Validating %d links (concurrency=%d, timeout=%s)…\n", len(links), opts.Concurrency, opts.Timeout)
-			validations, err := pipeline.Validate(links, opts)
+			total := len(links)
+			fmt.Printf("Validating %d links (concurrency=%d, timeout=%s)…\n", total, opts.Concurrency, opts.Timeout)
+
+			valStart := time.Now()
+			var progressMu sync.Mutex
+			opts.OnProgress = func(n, tot int) {
+				if n%50 != 0 && n != tot {
+					return
+				}
+				elapsed := time.Since(valStart)
+				var eta string
+				if n > 0 && n < tot {
+					remaining := time.Duration(float64(elapsed) / float64(n) * float64(tot-n))
+					eta = fmt.Sprintf(", ETA %s", remaining.Round(time.Second))
+				}
+				progressMu.Lock()
+				fmt.Printf("\r  %d/%d validated (%.0f%%)%s   ", n, tot, float64(n)/float64(tot)*100, eta)
+				progressMu.Unlock()
+			}
+
+			validations, err := pipeline.Validate(links, opts, sourceMap)
+			fmt.Println() // end progress line
 			if err != nil {
 				return err
 			}
@@ -71,7 +93,8 @@ var extractCmd = &cobra.Command{
 					broken++
 				}
 			}
-			fmt.Printf("Validation complete: %d broken, %d valid\n", broken, len(links)-broken)
+			fmt.Printf("Validation complete: %d broken, %d valid (%s)\n",
+				broken, len(links)-broken, time.Since(valStart).Round(time.Millisecond))
 
 			// Stage 3: Resolve
 			if opts.Resolve && len(validations) > 0 {
@@ -83,6 +106,7 @@ var extractCmd = &cobra.Command{
 				if opts.EnableWayback {
 					fmt.Println("Wayback Machine enrichment enabled.")
 				}
+				resolvStart := time.Now()
 				fmt.Println("Resolving broken links…")
 				resolutions := pipeline.Resolve(validations, opts)
 				result.Resolutions = resolutions
@@ -92,7 +116,8 @@ var extractCmd = &cobra.Command{
 						resolved++
 					}
 				}
-				fmt.Printf("Resolution complete: %d fixed, %d unresolved\n", resolved, len(resolutions)-resolved)
+				fmt.Printf("Resolution complete: %d fixed, %d unresolved (%s)\n",
+					resolved, len(resolutions)-resolved, time.Since(resolvStart).Round(time.Millisecond))
 			}
 		}
 
@@ -103,6 +128,8 @@ var extractCmd = &cobra.Command{
 			}
 			fmt.Printf("HTML report written to %s\n", opts.HTMLPath)
 		}
+
+		fmt.Printf("Total run time: %s\n", time.Since(runStart).Round(time.Millisecond))
 		return nil
 	},
 }
@@ -119,6 +146,8 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 	noFetch, _ := cmd.Flags().GetBool("no-fetch")
 	enableAI, _ := cmd.Flags().GetBool("ai")
 	enableWayback, _ := cmd.Flags().GetBool("wayback")
+	docforgeManifest, _ := cmd.Flags().GetString("docforge-manifest")
+	docforgeStrict, _ := cmd.Flags().GetBool("docforge-strict")
 	htmlPath, _ := cmd.Flags().GetString("html")
 
 	return pipeline.Options{
@@ -136,8 +165,10 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 		NoFetch:        noFetch,
 		AI:             resolver.AIConfigFromEnv(),
 		EnableAI:       enableAI,
-		EnableWayback:  enableWayback,
-		HTMLPath:       htmlPath,
+		EnableWayback:    enableWayback,
+		DocforgeManifest: docforgeManifest,
+		DocforgeStrict:   docforgeStrict,
+		HTMLPath:         htmlPath,
 	}
 }
 
@@ -157,6 +188,8 @@ func init() {
 	extractCmd.Flags().Bool("ai", false, "Use Claude AI as last-resort resolver for external links (requires AI_API_KEY)")
 	extractCmd.Flags().Bool("apply-ai", false, "Allow AI-suggested fixes to be applied by the repair stage")
 	extractCmd.Flags().Bool("wayback", false, "Enrich AI resolution with Wayback Machine context and use as fallback (requires --ai)")
+	extractCmd.Flags().String("docforge-manifest", "", "Path to root docforge manifest YAML; enables extraction from remote-sourced files via local clones")
+	extractCmd.Flags().Bool("docforge-strict", false, "Flag valid links whose target file is not included in the docforge manifest (requires --docforge-manifest)")
 	rootCmd.AddCommand(extractCmd)
 }
 

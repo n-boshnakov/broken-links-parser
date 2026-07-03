@@ -45,13 +45,17 @@ See [docs/html-report.md](docs/html-report.md) for details on the interactive re
 go run ./cmd/broken-links-parser/ extract \
   --root ~/Documents/GitHub/gardener/documentation \
   --dirs website/documentation \
+  --docforge-manifest ~/Documents/GitHub/gardener/documentation/.docforge/website.yaml \
+  --repos-dir ~/Documents/GitHub \
   --validate \
   --resolve \
   --ai \
   --wayback \
-  --repos-dir ~/Documents/GitHub \
+  --concurrency 2 --timeout 30s \
   --html reports/report.html
 ```
+
+`--docforge-manifest` includes remote-sourced files from linked repos (e.g. `gardener/gardener`) without running a build. `--concurrency 2 --timeout 30s` reduces false positives caused by rate limiting on large runs.
 
 Requires `GITHUB_TOKEN` and `AI_API_KEY` in `.env`. See [docs/resolution.md](docs/resolution.md) for token setup.
 

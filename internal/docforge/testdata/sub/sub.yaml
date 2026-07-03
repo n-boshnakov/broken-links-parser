@@ -1,0 +1,5 @@
+structure:
+- file: etcd-druid
+  frontmatter:
+    title: Etcd Druid
+  source: https://github.com/gardener/etcd-druid/blob/master/README.md

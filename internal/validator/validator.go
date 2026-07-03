@@ -2,11 +2,21 @@ package validator
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
 )
+
+// SourceMapper is a minimal interface for looking up assembled paths.
+// Avoids a direct import cycle with internal/docforge.
+type SourceMapper interface {
+	ContainsLocalPath(localPath string) bool
+}
 
 // ValidateOptions controls validation behaviour.
 type ValidateOptions struct {
@@ -14,6 +24,13 @@ type ValidateOptions struct {
 	Timeout        time.Duration
 	IgnorePatterns []string
 	GitHubToken    string
+	RepoRoot       string // root of the scanned repo; used to resolve absolute-path links (starting with /)
+	// DocforgeStrict enables NotAssembled warnings for sourced files.
+	DocforgeStrict bool
+	SourceMap      SourceMapper
+	// OnProgress is called after each link is validated. n is the number completed, total is the full count.
+	// Safe to leave nil.
+	OnProgress func(n, total int)
 }
 
 // Validate classifies each link as valid or broken.
@@ -32,8 +49,17 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 	}
 
 	results := make([]types.ValidationResult, len(links))
+	total := len(links)
+	var done int64
 
-	// Separate relative from absolute to process them differently.
+	notify := func() {
+		if opts.OnProgress != nil {
+			opts.OnProgress(int(atomic.AddInt64(&done, 1)), total)
+		} else {
+			atomic.AddInt64(&done, 1)
+		}
+	}
+
 	type indexedLink struct {
 		idx  int
 		link types.Link
@@ -44,12 +70,29 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 		switch l.Type {
 		case types.LinkTypeAbsolute:
 			absolutes = append(absolutes, indexedLink{i, l})
+		case types.LinkTypeImage:
+			// Image links with absolute URLs (badges, remote images) need HTTP validation.
+			// Image links with relative/local paths use file existence check.
+			if strings.HasPrefix(l.URL, "http://") || strings.HasPrefix(l.URL, "https://") {
+				absolutes = append(absolutes, indexedLink{i, l})
+			} else {
+				r := ValidateRelative(l, opts.IgnorePatterns, opts.RepoRoot)
+				if r.Valid && opts.DocforgeStrict && opts.SourceMap != nil && l.SourceRepo != "" {
+					r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot))
+				}
+				results[i] = r
+				notify()
+			}
 		default:
-			results[i] = ValidateRelative(l, opts.IgnorePatterns)
+			r := ValidateRelative(l, opts.IgnorePatterns, opts.RepoRoot)
+			if r.Valid && opts.DocforgeStrict && opts.SourceMap != nil && l.SourceRepo != "" {
+				r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot))
+			}
+			results[i] = r
+			notify()
 		}
 	}
 
-	// Process absolute links concurrently with a semaphore.
 	sem := make(chan struct{}, opts.Concurrency)
 	var wg sync.WaitGroup
 	for _, il := range absolutes {
@@ -60,9 +103,57 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[il.idx] = ValidateAbsolute(il.link, client, opts.IgnorePatterns, opts.GitHubToken)
+			notify()
 		}()
 	}
 	wg.Wait()
 
 	return results
 }
+
+// resolvedPath computes the absolute path of a relative link target.
+func resolvedPath(l types.Link, repoRoot string) string {
+	url := l.URL
+	if i := strings.Index(url, "#"); i >= 0 {
+		url = url[:i]
+	}
+	if url == "" {
+		return l.SourceFile
+	}
+	if strings.HasPrefix(url, "/") {
+		base := l.SourceRepo
+		if base == "" {
+			base = repoRoot
+		}
+		if base != "" {
+			return filepath.Join(base, filepath.FromSlash(url))
+		}
+	}
+	return filepath.Join(filepath.Dir(l.SourceFile), filepath.FromSlash(url))
+}
+
+// docforgeSourceMap is the concrete adapter used by pipeline to pass SourceMap.
+// Defined here to keep the import direction clean.
+type docforgeSourceMap struct {
+	paths map[string]bool // set of all LocalFilePath values
+}
+
+// NewSourceMapper builds a SourceMapper from a map of assembledPath→localFilePath.
+func NewSourceMapper(localPaths []string) SourceMapper {
+	m := &docforgeSourceMap{paths: make(map[string]bool, len(localPaths))}
+	for _, p := range localPaths {
+		m.paths[filepath.Clean(p)] = true
+	}
+	return m
+}
+
+func (m *docforgeSourceMap) ContainsLocalPath(localPath string) bool {
+	return m.paths[filepath.Clean(localPath)]
+}
+
+// fileExists is used in tests.
+var fileExists = func(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+

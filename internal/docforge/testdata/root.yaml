@@ -1,0 +1,13 @@
+structure:
+- dir: guides
+  structure:
+  - file: ha-best-practices
+    frontmatter:
+      title: HA Best Practices
+    source: https://github.com/gardener/gardener/blob/master/docs/usage/ha.md
+  - fileTree: https://github.com/gardener/machine-controller-manager/tree/master/docs
+    excludeFiles:
+    - README.md
+- dir: other
+  structure:
+  - manifest: ./sub/sub.yaml
