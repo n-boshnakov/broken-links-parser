@@ -12,11 +12,9 @@ func TestNormaliseAnchor(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"Installation", "installation"},
 		{"Getting Started", "getting-started"},
-		{"foo & bar", "foo--bar"},  // & stripped, spaces→hyphens
+		{"foo & bar", "foo--bar"}, // & stripped, surrounding spaces each become -, giving --
 		{"  spaces  ", "spaces"},
 	}
-	// Relax the & case — GitHub strips & and collapses hyphens.
-	cases[2].want = "foo-bar"
 	for _, c := range cases {
 		if got := NormaliseAnchor(c.in); got != c.want {
 			t.Errorf("NormaliseAnchor(%q) = %q, want %q", c.in, got, c.want)
@@ -58,7 +56,7 @@ func TestValidateRelative(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ValidateRelative(tc.link, tc.patterns)
+			got := ValidateRelative(tc.link, tc.patterns, "")
 			if got.Valid != tc.wantOK {
 				t.Errorf("Valid: got %v, want %v", got.Valid, tc.wantOK)
 			}

@@ -4,7 +4,7 @@ Pass `--html <path>` to write an interactive HTML report after any pipeline stag
 
 ## Without validation
 
-Shows all links found with type badges and a live filter/sort UI.
+Shows all links found with type badges and filter/sort controls.
 
 ```sh
 go run ./cmd/broken-links-parser/ extract \
@@ -43,11 +43,66 @@ go run ./cmd/broken-links-parser/ extract \
   --html reports/report.html
 ```
 
-## Features
+## Filtering
 
-- **Live filter** — type in the search box to filter rows by URL, source file, or reason
-- **Sortable columns** — click any column header to sort ascending/descending
-- **Clickable absolute URLs** — open in a new tab directly from the report
-- **Type badges** — colour-coded: relative (blue), absolute (green), anchor (yellow), image (pink)
-- **Status badges** — Valid (green), Broken (red), Ignored (grey)
-- **Strategy badges** — git-history, github-api, local-clone (blue); AI / Wayback+AI (yellow)
+The report has a filter bar above the table with three sets of toggle chips and a text search box. Filters combine: all active chips within a group use OR logic; groups use AND logic.
+
+### Type chips
+
+Toggle one or more link types to show only those rows:
+
+| Chip | Shows |
+|------|-------|
+| `relative` | Relative file links (`../guide/intro.md`) |
+| `absolute` | Absolute URLs (`https://...`) |
+| `anchor` | Same-page anchor links (`#heading`) |
+| `image` | Image links (`![alt](src)`) |
+
+### Status chips *(available when `--validate` was used)*
+
+| Chip | Shows |
+|------|-------|
+| `Broken` | Links that returned an error (4xx, 5xx, timeout, file not found) |
+| `Valid` | Links that resolved successfully |
+| `Ignored` | Links skipped due to `.linkignore` or `--ignore-pattern` |
+| `Not in manifest` | Links valid on disk but not included in the docforge manifest (`--docforge-strict` only) |
+
+### Fixed chips *(available when `--resolve` was used)*
+
+| Chip | Shows |
+|------|-------|
+| `Has fix` | Broken links where a replacement URL was found |
+| `Unresolved` | Broken links where no replacement could be found |
+| `Deleted` | Links where the target file was deleted; points to the deletion commit |
+| `Wayback fallback` | Links where no live replacement was found; archive URL provided |
+
+### Text search
+
+The search box filters by URL or source file path. It works alongside the chips — only rows that match both the active chips and the search text are shown.
+
+### Clear all
+
+The **Clear all** button resets all chips and the search box at once.
+
+## Sorting
+
+Click any column header to sort that column ascending. Click again to reverse. Sorting works on the currently visible rows (filtered results sort independently of hidden rows).
+
+## Badges
+
+| Badge | Colour | Meaning |
+|-------|--------|---------|
+| `relative` | Blue | Relative file link |
+| `absolute` | Green | Absolute URL |
+| `anchor` | Yellow | Anchor-only link |
+| `image` | Pink | Image link |
+| `Valid` | Green | Link is reachable |
+| `Broken` | Red | Link returned an error |
+| `Ignored` | Grey | Link was skipped |
+| `Not in manifest` | Amber | Valid on disk but not assembled |
+| `git-history` / `local-clone` / `github-api` | Blue | Programmatic fix found |
+| `AI (low confidence)` / `Wayback + AI` | Yellow | AI-assisted suggestion |
+
+## Source file column
+
+Source files are shown as clickable GitHub URLs pointing to the file in the upstream repository — both for files in the primary scanned repo and for files pulled from remote repos via a docforge manifest.

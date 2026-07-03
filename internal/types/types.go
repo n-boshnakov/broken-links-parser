@@ -64,10 +64,12 @@ const (
 
 // ValidationResult is the outcome of validating a single Link.
 type ValidationResult struct {
-	Link       Link
-	Valid      bool
-	Reason     string // one of the Reason* constants, empty when Valid
-	StatusCode int    // HTTP status code, 0 for non-HTTP checks
+	Link             Link
+	Valid            bool
+	Reason           string // one of the Reason* constants, empty when Valid
+	StatusCode       int    // HTTP status code, 0 for non-HTTP checks
+	NotAssembled     bool   // true when link is valid on disk but target not in docforge manifest (--docforge-strict only)
+	SuggestedAnchor  string // closest matching anchor when Reason is ANCHOR_NOT_FOUND; empty otherwise
 }
 
 // Link is a single link occurrence extracted from a source file.
@@ -76,9 +78,10 @@ type ValidationResult struct {
 // Repairs must be applied in reverse offset order to keep earlier offsets valid.
 type Link struct {
 	URL        string
-	Text       string // anchor text or alt text — empty for reference-style links
+	Text       string   // anchor text or alt text — empty for reference-style links
 	Type       LinkType
 	SourceFile string
+	SourceRepo string   // local clone path of the origin repo; empty for files in the primary scanned tree
 	Start      int
 	End        int
 }

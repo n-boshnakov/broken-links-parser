@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/pipeline"
+	"github.com/n-boshnakov/broken-links-parser/internal/resolver"
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
 )
 
@@ -20,9 +23,15 @@ type reportRow struct {
 
 var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"isAbsolute": func(r reportRow) bool { return r.Type == types.LinkTypeAbsolute },
+	"isGitHubURL": func(s string) bool {
+		return strings.HasPrefix(s, "https://github.com/")
+	},
 	"statusClass": func(r reportRow) string {
 		if r.Result == nil {
 			return ""
+		}
+		if r.Result.NotAssembled {
+			return "not-assembled"
 		}
 		if r.Result.Reason == types.ReasonIgnored {
 			return "ignored"
@@ -35,6 +44,9 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"statusLabel": func(r reportRow) string {
 		if r.Result == nil {
 			return ""
+		}
+		if r.Result.NotAssembled {
+			return "Valid — not in manifest"
 		}
 		if r.Result.Reason == types.ReasonIgnored {
 			return "Ignored"
@@ -52,6 +64,17 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			return fmt.Sprintf("%s %d", r.Result.Reason, r.Result.StatusCode)
 		}
 		return r.Result.Reason
+	},
+	"suggestedFix": func(r reportRow) string {
+		if r.Result == nil || r.Result.SuggestedAnchor == "" {
+			return ""
+		}
+		// Replace the fragment in the original URL with the suggested anchor.
+		u := r.URL
+		if i := strings.Index(u, "#"); i >= 0 {
+			u = u[:i]
+		}
+		return u + "#" + r.Result.SuggestedAnchor
 	},
 	"hasValidation": func(rows []reportRow) bool {
 		return len(rows) > 0 && rows[0].Result != nil
@@ -146,7 +169,19 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   body { font-family: sans-serif; margin: 2rem; color: #222; }
   h1 { font-size: 1.4rem; }
   p.meta { color: #666; font-size: .9rem; }
-  input[type=search] { padding: .4rem .6rem; font-size: 1rem; width: 24rem; margin-bottom: 1rem; }
+  input[type=search] { padding: .4rem .6rem; font-size: 1rem; width: 22rem; }
+  .filters { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin-bottom:1rem; }
+  .filter-group { display:flex; align-items:center; gap:.25rem; font-size:.85rem; color:#555; }
+  .filter-group label { font-weight:600; }
+  .chip { display:inline-flex; align-items:center; padding:.2rem .6rem; border-radius:999px; border:1.5px solid #ccc; background:#fff; font-size:.78rem; font-weight:600; cursor:pointer; user-select:none; transition:border-color .15s, background .15s; }
+  .chip:hover { border-color:#888; }
+  .chip.active { border-color:#2563eb; background:#dbeafe; color:#1e40af; }
+  .chip.active.broken-chip { border-color:#991b1b; background:#fee2e2; color:#991b1b; }
+  .chip.active.valid-chip { border-color:#166534; background:#dcfce7; color:#166534; }
+  .chip.active.ignored-chip { border-color:#6b7280; background:#f3f4f6; color:#6b7280; }
+  .chip.active.not-assembled-chip { border-color:#92400e; background:#fef3c7; color:#92400e; }
+  .chip-clear { padding:.2rem .5rem; border-radius:4px; border:1px solid #ddd; background:#f9f9f9; font-size:.78rem; cursor:pointer; color:#555; }
+  .chip-clear:hover { background:#f0f0f0; }
   table { border-collapse: collapse; width: 100%; font-size: .9rem; }
   th { background: #f0f0f0; text-align: left; padding: .5rem .75rem; border-bottom: 2px solid #ccc; cursor: pointer; user-select: none; }
   td { padding: .4rem .75rem; border-bottom: 1px solid #e0e0e0; vertical-align: top; word-break: break-all; }
@@ -160,6 +195,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   .valid    { background:#dcfce7; color:#166534; }
   .broken   { background:#fee2e2; color:#991b1b; }
   .ignored  { background:#f3f4f6; color:#6b7280; }
+  .not-assembled { background:#fef3c7; color:#92400e; }
   .strategy-normal { background:#dbeafe; color:#1e40af; }
   .strategy-ai     { background:#fef9c3; color:#854d0e; }
   .unresolved-reason { color:#6b7280; font-size:.8rem; font-style:italic; }
@@ -169,7 +205,36 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 <body>
 <h1>Link Report</h1>
 <p class="meta">Root: <code>{{.Root}}</code> &nbsp;·&nbsp; {{len .Links}} links found{{if .BrokenCount}} &nbsp;·&nbsp; <strong style="color:#991b1b">{{.BrokenCount}} broken</strong>{{end}}</p>
-<input type="search" id="q" placeholder="Filter by URL or source file…" oninput="filter()">
+
+<div class="filters">
+  <div class="filter-group">
+    <label>Type:</label>
+    <span class="chip" onclick="toggleChip(this,'type','relative')">relative</span>
+    <span class="chip" onclick="toggleChip(this,'type','absolute')">absolute</span>
+    <span class="chip" onclick="toggleChip(this,'type','anchor')">anchor</span>
+    <span class="chip" onclick="toggleChip(this,'type','image')">image</span>
+  </div>
+  {{if hasValidation .Links}}
+  <div class="filter-group">
+    <label>Status:</label>
+    <span class="chip broken-chip" onclick="toggleChip(this,'status','broken')">Broken</span>
+    <span class="chip valid-chip" onclick="toggleChip(this,'status','valid')">Valid</span>
+    <span class="chip ignored-chip" onclick="toggleChip(this,'status','ignored')">Ignored</span>
+    <span class="chip not-assembled-chip" onclick="toggleChip(this,'status','not-assembled')">Not in manifest</span>
+  </div>
+  {{end}}
+  {{if hasResolution .Links}}
+  <div class="filter-group">
+    <label>Fixed:</label>
+    <span class="chip" onclick="toggleChip(this,'fixed','yes')">Has fix</span>
+    <span class="chip" onclick="toggleChip(this,'fixed','no')">Unresolved</span>
+    <span class="chip" onclick="toggleChip(this,'fixed','deleted')">Deleted</span>
+    <span class="chip" onclick="toggleChip(this,'fixed','wayback')">Wayback fallback</span>
+  </div>
+  {{end}}
+  <input type="search" id="q" placeholder="Filter by URL or source…" oninput="applyFilters()">
+  <button class="chip-clear" onclick="clearAll()">Clear all</button>
+</div>
 <table id="tbl">
   <thead>
     <tr>
@@ -182,23 +247,46 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   </thead>
   <tbody>
   {{range .Links}}
-    <tr{{if eq (statusClass .) "broken"}} class="row-broken"{{end}}>
+    <tr{{if eq (statusClass .) "broken"}} class="row-broken"{{end}}
+        data-type="{{.Type}}"
+        data-status="{{statusClass .}}"
+        data-fixed="{{if fixedURL .}}{{if .Resolution}}{{if .Resolution.Deleted}}deleted{{else if .Resolution.IsWaybackFallback}}wayback{{else}}yes{{end}}{{else}}yes{{end}}{{else}}no{{end}}">
       <td><span class="badge {{.Type}}">{{.Type}}</span></td>
       <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
-      <td>{{.Rel}}</td>
-      {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}</td>{{end}}
+      <td>{{if isGitHubURL .Rel}}<a href="{{.Rel}}" target="_blank" rel="noopener">{{.Rel}}</a>{{else}}{{.Rel}}{{end}}</td>
+      {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}{{if suggestedFix .}} <span class="unresolved-reason">→ <a href="{{suggestedFix .}}">{{suggestedFix .}}</a></span>{{end}}</td>{{end}}
       {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}">{{strategyLabel .}}</span>{{end}}</td>{{end}}
     </tr>
   {{end}}
   </tbody>
 </table>
 <script>
-function filter() {
+const active = { type: new Set(), status: new Set(), fixed: new Set() };
+
+function toggleChip(el, group, val) {
+  if (active[group].has(val)) { active[group].delete(val); el.classList.remove('active'); }
+  else { active[group].add(val); el.classList.add('active'); }
+  applyFilters();
+}
+
+function applyFilters() {
   const q = document.getElementById('q').value.toLowerCase();
   document.querySelectorAll('#tbl tbody tr').forEach(r => {
-    r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+    const matchType   = active.type.size   === 0 || active.type.has(r.dataset.type);
+    const matchStatus = active.status.size === 0 || active.status.has(r.dataset.status);
+    const matchFixed  = active.fixed.size  === 0 || active.fixed.has(r.dataset.fixed);
+    const matchText   = !q || r.textContent.toLowerCase().includes(q);
+    r.style.display = (matchType && matchStatus && matchFixed && matchText) ? '' : 'none';
   });
 }
+
+function clearAll() {
+  ['type','status','fixed'].forEach(g => active[g].clear());
+  document.querySelectorAll('.chip.active').forEach(c => c.classList.remove('active'));
+  document.getElementById('q').value = '';
+  applyFilters();
+}
+
 let sortDir = {};
 function sort(col) {
   const tbody = document.querySelector('#tbl tbody');
@@ -216,16 +304,67 @@ function sort(col) {
 `))
 
 // WriteHTML writes an interactive HTML report to outPath.
-// root is used to compute relative source file paths in the report.
+// root is used to compute source file GitHub URLs in the report.
 func WriteHTML(outPath, root string, r *pipeline.Result) error {
+	// Resolve the remote URL and default branch for the primary scanned repo.
+	primaryRemote := strings.TrimSuffix(resolver.GetRemoteURL(root), ".git")
+	primaryBranch := getDefaultBranch(root)
+
+	// Build a reverse map: local file path → GitHub blob URL, for docforge-sourced files.
+	// Detect branch per clone to handle repos using main vs master.
+	localToGitHubURL := make(map[string]string)
+	cloneBranchCache := make(map[string]string) // clone path → branch
+	if r.SourceMap != nil {
+		for _, entry := range r.SourceMap {
+			if entry.LocalFilePath == "" || entry.RepoURL == "" || entry.RepoFilePath == "" {
+				continue
+			}
+			branch, ok := cloneBranchCache[entry.RepoLocalClone]
+			if !ok {
+				branch = getDefaultBranch(entry.RepoLocalClone)
+				cloneBranchCache[entry.RepoLocalClone] = branch
+			}
+			localToGitHubURL[entry.LocalFilePath] = entry.RepoURL + "/blob/" + branch + "/" + entry.RepoFilePath
+		}
+	}
+
 	rows := make([]reportRow, len(r.Links))
 	broken := 0
 	for i, l := range r.Links {
-		rel := l.SourceFile
-		if relPath, err := filepath.Rel(root, l.SourceFile); err == nil {
-			rel = relPath
+		var sourceURL string
+		if l.SourceRepo != "" {
+			// Docforge-sourced file — use SourceMap lookup.
+			if ghURL, ok := localToGitHubURL[l.SourceFile]; ok {
+				sourceURL = ghURL
+			} else {
+				// Fallback: build from clone's remote URL with detected branch.
+				cloneRemote := strings.TrimSuffix(resolver.GetRemoteURL(l.SourceRepo), ".git")
+				if cloneRemote != "" {
+					branch, ok := cloneBranchCache[l.SourceRepo]
+					if !ok {
+						branch = getDefaultBranch(l.SourceRepo)
+						cloneBranchCache[l.SourceRepo] = branch
+					}
+					if rel, err := filepath.Rel(l.SourceRepo, l.SourceFile); err == nil {
+						sourceURL = cloneRemote + "/blob/" + branch + "/" + filepath.ToSlash(rel)
+					}
+				}
+			}
+		} else if primaryRemote != "" {
+			// Local repo file — build from primary repo remote.
+			if rel, err := filepath.Rel(root, l.SourceFile); err == nil {
+				sourceURL = primaryRemote + "/blob/" + primaryBranch + "/" + filepath.ToSlash(rel)
+			}
 		}
-		row := reportRow{Link: l, Rel: rel}
+		if sourceURL == "" {
+			// Last resort: relative path.
+			if rel, err := filepath.Rel(root, l.SourceFile); err == nil {
+				sourceURL = rel
+			} else {
+				sourceURL = l.SourceFile
+			}
+		}
+		row := reportRow{Link: l, Rel: sourceURL}
 		if i < len(r.Validations) {
 			v := r.Validations[i]
 			row.Result = &v
@@ -251,4 +390,24 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 		Links       []reportRow
 		BrokenCount int
 	}{Root: root, Links: rows, BrokenCount: broken})
+}
+
+// getDefaultBranch returns the default branch name (e.g. "main" or "master") for a git repo.
+// Falls back to "master" if it cannot be determined.
+func getDefaultBranch(repoRoot string) string {
+	// Try: git symbolic-ref refs/remotes/origin/HEAD → refs/remotes/origin/main
+	cmd := exec.Command("git", "-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD")
+	out, err := cmd.Output()
+	if err == nil {
+		ref := strings.TrimSpace(string(out))
+		if parts := strings.Split(ref, "/"); len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+	// Fallback: check if main exists.
+	cmd2 := exec.Command("git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/remotes/origin/main")
+	if cmd2.Run() == nil {
+		return "main"
+	}
+	return "master"
 }

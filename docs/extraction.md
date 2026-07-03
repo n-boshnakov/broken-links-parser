@@ -42,7 +42,24 @@ go run ./cmd/broken-links-parser/ extract --root /path/to/repo --dirs docs,websi
 
 # Write an HTML report
 go run ./cmd/broken-links-parser/ extract --root /path/to/repo --html reports/report.html
+
+# Scan with docforge distributed documentation support
+go run ./cmd/broken-links-parser/ extract \
+  --root ~/Documents/GitHub/gardener/documentation \
+  --dirs website/documentation \
+  --docforge-manifest ~/Documents/GitHub/gardener/documentation/.docforge/website.yaml \
+  --repos-dir ~/Documents/GitHub \
+  --validate \
+  --html reports/report.html
 ```
+
+## Docforge distributed documentation (`--docforge-manifest`)
+
+When a repository assembles documentation from multiple GitHub repos using [docforge](https://github.com/gardener/docforge) manifests, use `--docforge-manifest` to include those remote-sourced files in the scan.
+
+The tool reads the manifest directly — no docforge build step required. For each remote-sourced file, it looks for a local clone under `--repos-dir` and extracts links from it. Relative links in sourced files are validated against their origin repo's filesystem.
+
+Use `--docforge-strict` to additionally flag links that are valid in the origin repo but whose target is not included in the manifest — these will break after assembly.
 
 ## Flags
 
@@ -52,3 +69,5 @@ go run ./cmd/broken-links-parser/ extract --root /path/to/repo --html reports/re
 | `--dirs` | all | Comma-separated subdirectories to restrict the scan |
 | `--verbose` | `false` | Print each link to stdout |
 | `--html` | — | Write an HTML report to this path |
+| `--docforge-manifest` | — | Path to root docforge manifest YAML; includes remote-sourced files from local clones |
+| `--docforge-strict` | `false` | Flag valid links whose target is not in the manifest (requires `--docforge-manifest`) |
