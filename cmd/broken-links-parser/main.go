@@ -81,7 +81,7 @@ var extractCmd = &cobra.Command{
 				progressMu.Unlock()
 			}
 
-			validations, err := pipeline.Validate(links, opts, sourceMap)
+			validations, cacheHits, err := pipeline.Validate(links, opts, sourceMap)
 			fmt.Println() // end progress line
 			if err != nil {
 				return err
@@ -93,8 +93,12 @@ var extractCmd = &cobra.Command{
 					broken++
 				}
 			}
-			fmt.Printf("Validation complete: %d broken, %d valid (%s)\n",
-				broken, len(links)-broken, time.Since(valStart).Round(time.Millisecond))
+			cacheMsg := ""
+			if cacheHits > 0 {
+				cacheMsg = fmt.Sprintf(", %d from cache", cacheHits)
+			}
+			fmt.Printf("Validation complete: %d broken, %d valid%s (%s)\n",
+				broken, len(links)-broken, cacheMsg, time.Since(valStart).Round(time.Millisecond))
 
 			// Stage 3: Resolve
 			if opts.Resolve && len(validations) > 0 {
@@ -141,6 +145,15 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 	ignoreFile, _ := cmd.Flags().GetString("ignore-file")
 	scopedIgnoreFile, _ := cmd.Flags().GetString("scoped-ignore-file")
 	concurrency, _ := cmd.Flags().GetInt("concurrency")
+	cacheFile, _ := cmd.Flags().GetString("cache-file")
+	cacheTTL, _ := cmd.Flags().GetDuration("cache-ttl")
+	noValidationCache, _ := cmd.Flags().GetBool("no-validation-cache")
+	// Expand ~ in cache-file.
+	if len(cacheFile) >= 2 && cacheFile[:2] == "~/" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cacheFile = home + cacheFile[1:]
+		}
+	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	resolve, _ := cmd.Flags().GetBool("resolve")
 	reposDir, _ := cmd.Flags().GetString("repos-dir")
@@ -166,8 +179,11 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 		Validate:       validate,
 		IgnorePatterns: ignorePatterns,
 		IgnoreFile:       ignoreFile,
-		ScopedIgnoreFile: scopedIgnoreFile,
-		Concurrency:    concurrency,
+		ScopedIgnoreFile:  scopedIgnoreFile,
+		Concurrency:       concurrency,
+		CacheFile:         cacheFile,
+		CacheTTL:          cacheTTL,
+		NoValidationCache: noValidationCache,
 		Timeout:        timeout,
 		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
 		Resolve:        resolve,
@@ -194,6 +210,9 @@ func init() {
 	extractCmd.Flags().String("ignore-file", "", "Path to a simple ignore patterns file (one per line, # for comments)")
 	extractCmd.Flags().String("scoped-ignore-file", "", "Path to a sectioned ignore file with per-repo patterns (see docs/validation.md)")
 	extractCmd.Flags().Int("concurrency", 5, "Max concurrent HTTP requests during validation")
+	extractCmd.Flags().String("cache-file", "~/.cache/broken-links-parser/validation.json", "Path to validation result cache file")
+	extractCmd.Flags().Duration("cache-ttl", 24*time.Hour, "How long cached validation results remain valid")
+	extractCmd.Flags().Bool("no-validation-cache", false, "Disable validation result caching")
 	extractCmd.Flags().Duration("timeout", 15*time.Second, "Per-link HTTP timeout")
 	extractCmd.Flags().Bool("resolve", false, "Attempt to resolve broken links after validation")
 	extractCmd.Flags().String("repos-dir", "", "Directory containing local repo clones for faster resolution (e.g. ~/Documents/GitHub)")

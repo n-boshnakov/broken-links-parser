@@ -46,7 +46,7 @@ func TestValidate_Integration(t *testing.T) {
 	}
 
 	opts := ValidateOptions{Concurrency: 2, Timeout: 5 * time.Second}
-	results := Validate(links, opts)
+	results, _ := Validate(links, opts)
 
 	if len(results) != len(links) {
 		t.Fatalf("got %d results, want %d", len(results), len(links))
