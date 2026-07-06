@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseManifest_SingleFileWithSource(t *testing.T) {
-	sm, err := ParseManifest("testdata/root.yaml", "")
+	sm, err := ParseManifest("testdata/root.yaml", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestParseManifest_SingleFileWithSource(t *testing.T) {
 }
 
 func TestParseManifest_RecursiveManifest(t *testing.T) {
-	sm, err := ParseManifest("testdata/root.yaml", "")
+	sm, err := ParseManifest("testdata/root.yaml", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestParseManifest_FileTreeWithExcludeFiles(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(docsDir, "concepts.md"), []byte("# Concepts"), 0o644)
 	_ = os.WriteFile(filepath.Join(docsDir, "README.md"), []byte("# README"), 0o644)
 
-	sm, err := ParseManifest("testdata/root.yaml", reposDir)
+	sm, err := ParseManifest("testdata/root.yaml", reposDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestParseManifest_FileTreeWithExcludeFiles(t *testing.T) {
 
 func TestParseManifest_MissingLocalClone_NoError(t *testing.T) {
 	// No reposDir set — should produce entries with empty LocalFilePath, no error.
-	sm, err := ParseManifest("testdata/root.yaml", "")
+	sm, err := ParseManifest("testdata/root.yaml", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,0 +1,8 @@
+# broken-links-parser scoped ignore file
+# Format:
+#   Lines before the first [section] are global — applied to all links.
+#   [/absolute/path/to/repo] starts a repo-specific section.
+#   Patterns use * as wildcard (matches any characters including /).
+#
+# Global patterns
+mailto:*
