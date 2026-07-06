@@ -24,7 +24,7 @@ func TestValidate_DocforgeStrict(t *testing.T) {
 	}
 
 	t.Run("strict=false — valid link not annotated", func(t *testing.T) {
-		results := Validate([]types.Link{link}, ValidateOptions{})
+		results, _ := Validate([]types.Link{link}, ValidateOptions{})
 		if !results[0].Valid {
 			t.Error("expected valid")
 		}
@@ -35,7 +35,7 @@ func TestValidate_DocforgeStrict(t *testing.T) {
 
 	t.Run("strict=true, target in SourceMap — not annotated", func(t *testing.T) {
 		sm := NewSourceMapper([]string{targetFile})
-		results := Validate([]types.Link{link}, ValidateOptions{
+		results, _ := Validate([]types.Link{link}, ValidateOptions{
 			DocforgeStrict: true,
 			SourceMap:      sm,
 		})
@@ -49,7 +49,7 @@ func TestValidate_DocforgeStrict(t *testing.T) {
 
 	t.Run("strict=true, target NOT in SourceMap — annotated", func(t *testing.T) {
 		sm := NewSourceMapper([]string{}) // empty map
-		results := Validate([]types.Link{link}, ValidateOptions{
+		results, _ := Validate([]types.Link{link}, ValidateOptions{
 			DocforgeStrict: true,
 			SourceMap:      sm,
 		})

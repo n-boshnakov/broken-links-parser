@@ -7,10 +7,10 @@ A CLI tool that scans Markdown and HTML documentation repositories for broken li
 | Stage | Status | Doc |
 |-------|--------|-----|
 | **1. Extraction** — collect all links from `.md` and `.html` files | ✅ Done | [docs/extraction.md](docs/extraction.md) |
-| **2. Validation** — check each link (disk / HTTP) | ✅ Done | [docs/validation.md](docs/validation.md) |
+| **2. Validation** — check each link (disk / HTTP); result cache for fast re-runs | ✅ Done | [docs/validation.md](docs/validation.md) |
 | **3. Resolution** — find correct replacement via git history / GitHub API / AI / Wayback | ✅ Done | [docs/resolution.md](docs/resolution.md) |
 | **4. Repair** — rewrite broken links in source files | 🔲 Planned | — |
-| **5. Reporting** — CSV report + docforge-compatible log | 🔲 Planned | — |
+| **5. Reporting** — CSV export + docforge-compatible log | 🔲 Planned | — |
 
 ## Quick start
 
@@ -47,6 +47,7 @@ go run ./cmd/broken-links-parser/ extract \
   --dirs website/documentation \
   --docforge-manifest ~/Documents/GitHub/gardener/documentation/.docforge/website.yaml \
   --repos-dir ~/Documents/GitHub \
+  --scoped-ignore-file .linkignore \
   --validate \
   --resolve \
   --ai \
@@ -55,7 +56,7 @@ go run ./cmd/broken-links-parser/ extract \
   --html reports/report.html
 ```
 
-`--docforge-manifest` includes remote-sourced files from linked repos (e.g. `gardener/gardener`) without running a build. On first run, repos not found under `--repos-dir` are auto-cloned into `~/.cache/broken-links-parser/clones`. `--concurrency 2 --timeout 30s` reduces false positives caused by rate limiting on large runs.
+`--docforge-manifest` includes remote-sourced files from linked repos (e.g. `gardener/gardener`) without running a build. On first run, repos not found under `--repos-dir` are auto-cloned into `~/.cache/broken-links-parser/clones`. Validation results are cached at `~/.cache/broken-links-parser/validation.json` — subsequent runs complete in seconds. `--concurrency 2 --timeout 30s` reduces false positives caused by rate limiting on large runs.
 
 Requires `GITHUB_TOKEN` and `AI_API_KEY` in `.env`. See [docs/resolution.md](docs/resolution.md) for token setup.
 

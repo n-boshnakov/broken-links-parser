@@ -31,6 +31,7 @@ Adds **Fixed Link** and **Strategy** columns.
 - Deleted files show `"Deleted in commit: <url>"` linking to the deletion commit
 - Wayback fallbacks show `"No live replacement found — see archived version: <url>"`
 - AI suggestions show a yellow `AI (low confidence)` or `Wayback + AI` badge
+- Anchor suggestions show a grey `Closest match` badge — the nearest heading when `ANCHOR_NOT_FOUND`
 - Unresolved links show an italicised reason explaining why no fix was found
 
 ```sh
@@ -102,6 +103,7 @@ Click any column header to sort that column ascending. Click again to reverse. S
 | `Not in manifest` | Amber | Valid on disk but not assembled |
 | `git-history` / `local-clone` / `github-api` | Blue | Programmatic fix found |
 | `AI (low confidence)` / `Wayback + AI` | Yellow | AI-assisted suggestion |
+| `Closest match` | Grey | Nearest heading anchor suggestion for `ANCHOR_NOT_FOUND` links |
 
 ## Source file column
 

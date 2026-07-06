@@ -33,6 +33,11 @@ type Options struct {
 	Timeout        time.Duration
 	GitHubToken    string
 
+	// Validation result cache.
+	CacheFile         string        // path to JSON cache file; default ~/.cache/broken-links-parser/validation.json
+	CacheTTL          time.Duration // TTL for cached results; default 24h
+	NoValidationCache bool          // disables validation caching entirely
+
 	// Resolution
 	Resolve       bool
 	ReposDir      string
@@ -99,11 +104,12 @@ func Extract(opts Options) ([]types.Link, docforge.SourceMap, error) {
 
 // Validate runs only the validation stage against the provided links.
 // sm is the SourceMap from Extract; pass nil when no manifest was used.
-func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.ValidationResult, error) {
+// Returns validation results and the number of absolute links served from cache.
+func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.ValidationResult, int, error) {
 	patterns := append([]string(nil), opts.IgnorePatterns...)
 
 	if filePatterns, err := validator.LoadIgnoreFile(filepath.Join(opts.Root, ".linkignore")); err != nil {
-		return nil, fmt.Errorf("reading .linkignore: %w", err)
+		return nil, 0, fmt.Errorf("reading .linkignore: %w", err)
 	} else {
 		patterns = append(patterns, filePatterns...)
 	}
@@ -111,7 +117,7 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 	if opts.IgnoreFile != "" {
 		filePatterns, err := validator.LoadIgnoreFile(opts.IgnoreFile)
 		if err != nil {
-			return nil, fmt.Errorf("reading ignore file: %w", err)
+			return nil, 0, fmt.Errorf("reading ignore file: %w", err)
 		}
 		patterns = append(patterns, filePatterns...)
 	}
@@ -121,7 +127,7 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 	if opts.ScopedIgnoreFile != "" {
 		si, err := validator.LoadScopedIgnoreFile(opts.ScopedIgnoreFile)
 		if err != nil {
-			return nil, fmt.Errorf("reading scoped ignore file: %w", err)
+			return nil, 0, fmt.Errorf("reading scoped ignore file: %w", err)
 		}
 		scopedIgnore = &si
 	}
@@ -136,13 +142,16 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 	}
 
 	vopts := validator.ValidateOptions{
-		Concurrency:    concurrency,
-		Timeout:        timeout,
-		IgnorePatterns: patterns,
-		ScopedIgnore:   scopedIgnore,
-		GitHubToken:    opts.GitHubToken,
-		RepoRoot:       opts.Root,
-		OnProgress:     opts.OnProgress,
+		Concurrency:       concurrency,
+		Timeout:           timeout,
+		IgnorePatterns:    patterns,
+		ScopedIgnore:      scopedIgnore,
+		GitHubToken:       opts.GitHubToken,
+		RepoRoot:          opts.Root,
+		OnProgress:        opts.OnProgress,
+		CacheFile:         opts.CacheFile,
+		CacheTTL:          opts.CacheTTL,
+		NoValidationCache: opts.NoValidationCache,
 	}
 
 	// Wire docforge strict mode when a manifest was provided.
@@ -158,7 +167,8 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 		vopts.SourceMap = validator.NewSourceMapper(localPaths)
 	}
 
-	return validator.Validate(links, vopts), nil
+	results, cacheHits := validator.Validate(links, vopts)
+	return results, cacheHits, nil
 }
 
 // Resolve runs only the resolution stage against the provided validation results.
@@ -187,7 +197,7 @@ func Run(opts Options) (*Result, error) {
 	result := &Result{Links: links, SourceMap: sm}
 
 	if opts.Validate {
-		validations, err := Validate(links, opts, sm)
+		validations, _, err := Validate(links, opts, sm)
 		if err != nil {
 			return nil, err
 		}

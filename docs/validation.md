@@ -87,6 +87,42 @@ You can also pass extra patterns via flag (repeatable) or point to an additional
 
 Both are merged with `.linkignore` when present.
 
+### Scoped ignore file (`--scoped-ignore-file`)
+
+For distributed documentation spanning multiple repos, use a single sectioned ignore file that lives in the tool's own repo. Patterns are scoped to specific origin repos, so rules for one repo don't affect others.
+
+Format:
+
+```
+# Lines before the first section are global — applied to all links
+mailto:*
+
+# [/absolute/path/to/repo] starts a repo-specific section
+[/Users/you/Documents/GitHub/gardener/gardener]
+/dev-setup/*
+/example-only-path/*
+
+[/Users/you/Documents/GitHub/kubernetes/kubernetes]
+/staging/*
+```
+
+- **Global patterns** (before any `[...]` section) apply to all links regardless of source
+- **Repo-specific patterns** apply only to links sourced from that repo's local clone
+- Paths must be absolute — relative paths would break if the file moves
+
+Pass it with `--scoped-ignore-file .linkignore` (the `.linkignore` in this repo is the recommended location when working with Gardener docs).
+
+## Validation result cache
+
+HTTP validation is the bottleneck — thousands of links at low concurrency takes 15–20 minutes. Most links are stable between runs. The tool caches validation results to disk so unchanged links are returned instantly on subsequent runs.
+
+**First run:** no speedup — all links are validated via HTTP and results are saved.  
+**Subsequent runs:** only new or expired links make HTTP requests. A typical re-run takes under a minute.
+
+The cache is stored at `~/.cache/broken-links-parser/validation.json` by default. Only absolute URL results are cached — relative and anchor links depend on local file state and are always re-checked.
+
+Use `--cache-ttl 1h` for a shorter TTL if you want fresher results. Use `--no-validation-cache` to disable caching entirely for a clean run.
+
 ## Flags
 
 | Flag | Default | Description |
@@ -94,5 +130,9 @@ Both are merged with `.linkignore` when present.
 | `--validate` | `false` | Run validation after extraction |
 | `--ignore-pattern` | — | Skip links matching this glob (repeatable) |
 | `--ignore-file` | — | Path to a file with ignore patterns (one per line, `#` = comment) |
+| `--scoped-ignore-file` | — | Path to a sectioned ignore file with per-repo patterns (see above) |
 | `--concurrency` | `5` | Max concurrent HTTP requests |
 | `--timeout` | `15s` | Per-link HTTP request timeout |
+| `--cache-file` | `~/.cache/broken-links-parser/validation.json` | Path to validation result cache |
+| `--cache-ttl` | `24h` | How long cached results remain valid |
+| `--no-validation-cache` | `false` | Disable validation caching for a fresh run |
