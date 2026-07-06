@@ -139,11 +139,20 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 	validate, _ := cmd.Flags().GetBool("validate")
 	ignorePatterns, _ := cmd.Flags().GetStringArray("ignore-pattern")
 	ignoreFile, _ := cmd.Flags().GetString("ignore-file")
+	scopedIgnoreFile, _ := cmd.Flags().GetString("scoped-ignore-file")
 	concurrency, _ := cmd.Flags().GetInt("concurrency")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	resolve, _ := cmd.Flags().GetBool("resolve")
 	reposDir, _ := cmd.Flags().GetString("repos-dir")
 	noFetch, _ := cmd.Flags().GetBool("no-fetch")
+	cacheDir, _ := cmd.Flags().GetString("cache-dir")
+	noCache, _ := cmd.Flags().GetBool("no-cache")
+	// Expand ~ in cacheDir.
+	if len(cacheDir) >= 2 && cacheDir[:2] == "~/" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cacheDir = home + cacheDir[1:]
+		}
+	}
 	enableAI, _ := cmd.Flags().GetBool("ai")
 	enableWayback, _ := cmd.Flags().GetBool("wayback")
 	docforgeManifest, _ := cmd.Flags().GetString("docforge-manifest")
@@ -156,12 +165,15 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 		Verbose:        verbose,
 		Validate:       validate,
 		IgnorePatterns: ignorePatterns,
-		IgnoreFile:     ignoreFile,
+		IgnoreFile:       ignoreFile,
+		ScopedIgnoreFile: scopedIgnoreFile,
 		Concurrency:    concurrency,
 		Timeout:        timeout,
 		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
 		Resolve:        resolve,
 		ReposDir:       reposDir,
+		CacheDir:       cacheDir,
+		NoCache:        noCache,
 		NoFetch:        noFetch,
 		AI:             resolver.AIConfigFromEnv(),
 		EnableAI:       enableAI,
@@ -179,12 +191,15 @@ func init() {
 	extractCmd.Flags().String("html", "", "Write an HTML report to this file path (default: reports/report.html)")
 	extractCmd.Flags().Bool("validate", false, "Validate each link after extraction")
 	extractCmd.Flags().StringArray("ignore-pattern", nil, "Skip links matching this glob pattern (repeatable)")
-	extractCmd.Flags().String("ignore-file", "", "Path to a file containing ignore patterns (one per line, # for comments)")
+	extractCmd.Flags().String("ignore-file", "", "Path to a simple ignore patterns file (one per line, # for comments)")
+	extractCmd.Flags().String("scoped-ignore-file", "", "Path to a sectioned ignore file with per-repo patterns (see docs/validation.md)")
 	extractCmd.Flags().Int("concurrency", 5, "Max concurrent HTTP requests during validation")
 	extractCmd.Flags().Duration("timeout", 15*time.Second, "Per-link HTTP timeout")
 	extractCmd.Flags().Bool("resolve", false, "Attempt to resolve broken links after validation")
 	extractCmd.Flags().String("repos-dir", "", "Directory containing local repo clones for faster resolution (e.g. ~/Documents/GitHub)")
 	extractCmd.Flags().Bool("no-fetch", false, "Skip git fetch when using local clones for resolution")
+	extractCmd.Flags().String("cache-dir", "~/.cache/broken-links-parser/clones", "Directory for auto-cloned repos; set empty to disable auto-cloning")
+	extractCmd.Flags().Bool("no-cache", false, "Disable auto-cloning; fall back to GitHub API when no local clone is found")
 	extractCmd.Flags().Bool("ai", false, "Use Claude AI as last-resort resolver for external links (requires AI_API_KEY)")
 	extractCmd.Flags().Bool("apply-ai", false, "Allow AI-suggested fixes to be applied by the repair stage")
 	extractCmd.Flags().Bool("wayback", false, "Enrich AI resolution with Wayback Machine context and use as fallback (requires --ai)")

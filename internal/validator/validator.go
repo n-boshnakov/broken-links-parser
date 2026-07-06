@@ -22,15 +22,13 @@ type SourceMapper interface {
 type ValidateOptions struct {
 	Concurrency    int
 	Timeout        time.Duration
-	IgnorePatterns []string
+	IgnorePatterns []string      // flat global patterns (--ignore-pattern / simple .linkignore)
+	ScopedIgnore   *ScopedIgnoreFile // sectioned ignore file; nil = disabled
 	GitHubToken    string
-	RepoRoot       string // root of the scanned repo; used to resolve absolute-path links (starting with /)
-	// DocforgeStrict enables NotAssembled warnings for sourced files.
+	RepoRoot       string
 	DocforgeStrict bool
 	SourceMap      SourceMapper
-	// OnProgress is called after each link is validated. n is the number completed, total is the full count.
-	// Safe to leave nil.
-	OnProgress func(n, total int)
+	OnProgress     func(n, total int)
 }
 
 // Validate classifies each link as valid or broken.
@@ -67,16 +65,20 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 	var absolutes []indexedLink
 
 	for i, l := range links {
+		// Compute patterns for this specific link (global + repo-specific).
+		linkPatterns := opts.IgnorePatterns
+		if opts.ScopedIgnore != nil {
+			linkPatterns = opts.ScopedIgnore.PatternsFor(l.SourceFile)
+			linkPatterns = append(linkPatterns, opts.IgnorePatterns...)
+		}
 		switch l.Type {
 		case types.LinkTypeAbsolute:
 			absolutes = append(absolutes, indexedLink{i, l})
 		case types.LinkTypeImage:
-			// Image links with absolute URLs (badges, remote images) need HTTP validation.
-			// Image links with relative/local paths use file existence check.
 			if strings.HasPrefix(l.URL, "http://") || strings.HasPrefix(l.URL, "https://") {
 				absolutes = append(absolutes, indexedLink{i, l})
 			} else {
-				r := ValidateRelative(l, opts.IgnorePatterns, opts.RepoRoot)
+				r := ValidateRelative(l, linkPatterns, opts.RepoRoot)
 				if r.Valid && opts.DocforgeStrict && opts.SourceMap != nil && l.SourceRepo != "" {
 					r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot))
 				}
@@ -84,7 +86,7 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 				notify()
 			}
 		default:
-			r := ValidateRelative(l, opts.IgnorePatterns, opts.RepoRoot)
+			r := ValidateRelative(l, linkPatterns, opts.RepoRoot)
 			if r.Valid && opts.DocforgeStrict && opts.SourceMap != nil && l.SourceRepo != "" {
 				r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot))
 			}
@@ -97,12 +99,18 @@ func Validate(links []types.Link, opts ValidateOptions) []types.ValidationResult
 	var wg sync.WaitGroup
 	for _, il := range absolutes {
 		il := il
+		// Compute patterns for absolute links too.
+		linkPatterns := opts.IgnorePatterns
+		if opts.ScopedIgnore != nil {
+			linkPatterns = opts.ScopedIgnore.PatternsFor(il.link.SourceFile)
+			linkPatterns = append(linkPatterns, opts.IgnorePatterns...)
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[il.idx] = ValidateAbsolute(il.link, client, opts.IgnorePatterns, opts.GitHubToken)
+			results[il.idx] = ValidateAbsolute(il.link, client, linkPatterns, opts.GitHubToken)
 			notify()
 		}()
 	}

@@ -4,10 +4,18 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
+)
+
+// failedClones tracks repos that failed to clone this run so we don't retry them.
+var (
+	failedClonesMu sync.Mutex
+	failedClones   = map[string]bool{}
 )
 
 // SourceEntry describes a single file that docforge will assemble into the documentation site.
@@ -26,9 +34,9 @@ type SourceMap map[string]SourceEntry
 // containing all remote-sourced files discoverable from local clones.
 // reposDir is the directory containing local clones (e.g. ~/Documents/GitHub).
 // Warnings are printed for remote repos without a local clone.
-func ParseManifest(manifestPath, reposDir string) (SourceMap, error) {
+func ParseManifest(manifestPath, reposDir, cacheDir string) (SourceMap, error) {
 	sm := make(SourceMap)
-	if err := parseManifestFile(manifestPath, reposDir, "", sm); err != nil {
+	if err := parseManifestFile(manifestPath, reposDir, cacheDir, "", sm); err != nil {
 		return nil, err
 	}
 	return sm, nil
@@ -53,7 +61,7 @@ type manifestDoc struct {
 
 // --- Parser ---
 
-func parseManifestFile(manifestPath, reposDir, pathPrefix string, sm SourceMap) error {
+func parseManifestFile(manifestPath, reposDir, cacheDir, pathPrefix string, sm SourceMap) error {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return fmt.Errorf("reading manifest %s: %w", manifestPath, err)
@@ -63,10 +71,10 @@ func parseManifestFile(manifestPath, reposDir, pathPrefix string, sm SourceMap) 
 		return fmt.Errorf("parsing manifest %s: %w", manifestPath, err)
 	}
 	manifestDir := filepath.Dir(manifestPath)
-	return processNodes(doc.Structure, reposDir, manifestDir, pathPrefix, sm)
+	return processNodes(doc.Structure, reposDir, cacheDir, manifestDir, pathPrefix, sm)
 }
 
-func processNodes(nodes []*manifestNode, reposDir, manifestDir, pathPrefix string, sm SourceMap) error {
+func processNodes(nodes []*manifestNode, reposDir, cacheDir, manifestDir, pathPrefix string, sm SourceMap) error {
 	for _, node := range nodes {
 		if node == nil {
 			continue
@@ -78,7 +86,7 @@ func processNodes(nodes []*manifestNode, reposDir, manifestDir, pathPrefix strin
 		case node.Dir != "":
 			nodePath = joinPath(pathPrefix, node.Dir)
 			// Recurse into children.
-			if err := processNodes(node.Structure, reposDir, manifestDir, nodePath, sm); err != nil {
+			if err := processNodes(node.Structure, reposDir, cacheDir, manifestDir, nodePath, sm); err != nil {
 				return err
 			}
 
@@ -88,7 +96,7 @@ func processNodes(nodes []*manifestNode, reposDir, manifestDir, pathPrefix strin
 			if !filepath.IsAbs(ref) {
 				ref = filepath.Join(manifestDir, ref)
 			}
-			if err := parseManifestFile(ref, reposDir, pathPrefix, sm); err != nil {
+			if err := parseManifestFile(ref, reposDir, cacheDir, pathPrefix, sm); err != nil {
 				return err
 			}
 
@@ -96,14 +104,14 @@ func processNodes(nodes []*manifestNode, reposDir, manifestDir, pathPrefix strin
 			nodePath = joinPath(pathPrefix, node.File)
 			if node.Source != "" {
 				// Remote file with explicit source URL.
-				addRemoteFile(node.Source, nodePath, reposDir, sm)
+				addRemoteFile(node.Source, nodePath, reposDir, cacheDir, sm)
 			}
 			// Local files (no source) are already in the primary scanned tree — skip.
 
 		case node.FileTree != "":
 			if isRemoteURL(node.FileTree) {
 				// Remote fileTree — enumerate from local clone.
-				addRemoteFileTree(node.FileTree, pathPrefix, node.ExcludeFiles, reposDir, sm)
+				addRemoteFileTree(node.FileTree, pathPrefix, node.ExcludeFiles, reposDir, cacheDir, sm)
 			}
 			// Local fileTree (relative path) — already in the primary scanned tree — skip.
 		}
@@ -112,12 +120,12 @@ func processNodes(nodes []*manifestNode, reposDir, manifestDir, pathPrefix strin
 }
 
 // addRemoteFile adds a single remote file (from a `source:` URL) to the SourceMap.
-func addRemoteFile(sourceURL, assembledPath, reposDir string, sm SourceMap) {
+func addRemoteFile(sourceURL, assembledPath, reposDir, cacheDir string, sm SourceMap) {
 	repoURL, repoFilePath, ok := parseGitHubBlobURL(sourceURL)
 	if !ok {
 		return
 	}
-	clonePath := findLocalClone(repoURL, reposDir)
+	clonePath := findLocalClone(repoURL, reposDir, cacheDir)
 	entry := SourceEntry{
 		AssembledPath:  assembledPath,
 		RepoURL:        repoURL,
@@ -133,12 +141,12 @@ func addRemoteFile(sourceURL, assembledPath, reposDir string, sm SourceMap) {
 }
 
 // addRemoteFileTree enumerates all .md/.html files under a remote tree URL and adds each to the SourceMap.
-func addRemoteFileTree(treeURL, assembledPathPrefix string, excludeFiles []string, reposDir string, sm SourceMap) {
+func addRemoteFileTree(treeURL, assembledPathPrefix string, excludeFiles []string, reposDir, cacheDir string, sm SourceMap) {
 	repoURL, treePath, ok := parseGitHubTreeURL(treeURL)
 	if !ok {
 		return
 	}
-	clonePath := findLocalClone(repoURL, reposDir)
+	clonePath := findLocalClone(repoURL, reposDir, cacheDir)
 	if clonePath == "" {
 		fmt.Fprintf(os.Stderr, "docforge: no local clone found for %s (fileTree: %s)\n", repoURL, treeURL)
 		return
@@ -225,25 +233,48 @@ func isRemoteURL(s string) bool {
 	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
 }
 
-// findLocalClone checks <reposDir>/<owner>/<repo> and <reposDir>/<repo> for a .git directory.
-func findLocalClone(repoURL, reposDir string) string {
-	if reposDir == "" {
-		return ""
-	}
-	// Extract owner/repo from URL.
+// findLocalClone checks reposDir then cacheDir for a .git directory matching repoURL.
+// If cacheDir is non-empty and no clone is found, auto-clones the repo.
+func findLocalClone(repoURL, reposDir, cacheDir string) string {
 	trimmed := strings.TrimPrefix(repoURL, "https://github.com/")
 	parts := strings.SplitN(trimmed, "/", 2)
 	if len(parts) != 2 {
 		return ""
 	}
 	owner, repo := parts[0], parts[1]
-	candidates := []string{
-		filepath.Join(reposDir, owner, repo),
-		filepath.Join(reposDir, repo),
+
+	if reposDir != "" {
+		for _, p := range []string{
+			filepath.Join(reposDir, owner, repo),
+			filepath.Join(reposDir, repo),
+		} {
+			if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
+				return p
+			}
+		}
 	}
-	for _, p := range candidates {
+	if cacheDir != "" {
+		p := filepath.Join(cacheDir, owner, repo)
 		if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
 			return p
+		}
+		// Auto-clone into cache.
+		failedClonesMu.Lock()
+		alreadyFailed := failedClones[repoURL]
+		failedClonesMu.Unlock()
+		if !alreadyFailed {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err == nil {
+				fmt.Fprintf(os.Stderr, "Cloning %s into cache…\n", repoURL)
+				cmd := exec.Command("git", "clone", "--filter=blob:none", "--no-single-branch", "--quiet", repoURL, p)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					fmt.Fprintf(os.Stderr, "docforge: failed to clone %s: %v\n%s\n", repoURL, err, out)
+					failedClonesMu.Lock()
+					failedClones[repoURL] = true
+					failedClonesMu.Unlock()
+				} else {
+					return p
+				}
+			}
 		}
 	}
 	return ""

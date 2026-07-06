@@ -32,23 +32,40 @@ func parseGitHubURL(rawURL string) (owner, repo, branch, filePath string, ok boo
 	return parts[0], parts[1], parts[3], filePath, true
 }
 
-// findLocalClone checks common paths under reposDir for a valid git repo
-// matching owner/repo. Returns the repo root path if found.
-func findLocalClone(reposDir, owner, repo string) (string, bool) {
-	candidates := []string{
-		filepath.Join(reposDir, owner, repo),
-		filepath.Join(reposDir, repo),
+// findLocalClone checks reposDir, then cacheDir, for a valid git repo matching owner/repo.
+// If cacheDir is non-empty and noCache is false and the repo is not found, it auto-clones it.
+// Returns the repo root path and whether it was found/cloned.
+func findLocalClone(reposDir, cacheDir, owner, repo string, noCache bool) (string, bool) {
+	// 1. Check reposDir first (user-managed clones take priority).
+	if reposDir != "" {
+		for _, p := range []string{
+			filepath.Join(reposDir, owner, repo),
+			filepath.Join(reposDir, repo),
+		} {
+			if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
+				return p, true
+			}
+		}
 	}
-	for _, p := range candidates {
+	// 2. Check cache directory.
+	if cacheDir != "" {
+		p := filepath.Join(cacheDir, owner, repo)
 		if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
 			return p, true
+		}
+		// 3. Auto-clone if not found and cache is enabled.
+		if !noCache {
+			repoURL := "https://github.com/" + owner + "/" + repo
+			if cloned := ensureClone(repoURL, cacheDir); cloned != "" {
+				return cloned, true
+			}
 		}
 	}
 	return "", false
 }
 
 // ResolveViaLocalClone resolves a broken absolute GitHub link using a local clone.
-func ResolveViaLocalClone(result types.ValidationResult, reposDir string, noFetch bool, cache *GitCache) types.ResolutionResult {
+func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir string, noCache, noFetch bool, cache *GitCache) types.ResolutionResult {
 	owner, repo, _, filePath, ok := parseGitHubURL(result.Link.URL)
 	if !ok {
 		return types.ResolutionResult{ValidationResult: result}
@@ -59,7 +76,7 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir string, noFetc
 		filePath = filePath[:i]
 	}
 
-	clonePath, found := findLocalClone(reposDir, owner, repo)
+	clonePath, found := findLocalClone(reposDir, cacheDir, owner, repo, noCache)
 	if !found {
 		return types.ResolutionResult{ValidationResult: result}
 	}

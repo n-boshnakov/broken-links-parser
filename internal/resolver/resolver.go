@@ -10,6 +10,8 @@ import (
 type ResolveOptions struct {
 	RepoRoot      string // local root of the scanned repo (for relative link resolution)
 	ReposDir      string // parent directory containing local clones (e.g. ~/Documents/GitHub)
+	CacheDir      string // directory for auto-cloned repos; empty disables auto-cloning
+	NoCache       bool   // when true, disables auto-cloning (falls back to API only)
 	GitHubToken   string
 	AI            AIConfig
 	EnableAI      bool
@@ -42,8 +44,8 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache) 
 		if isGitHubLink(r.Link.URL) {
 			// Try local clone first; keep its result even if unresolved (it carries UnresolvedReason).
 			var cloneResult types.ResolutionResult
-			if opts.ReposDir != "" {
-				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.NoFetch, cache)
+			if opts.ReposDir != "" || opts.CacheDir != "" {
+				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.CacheDir, opts.NoCache, opts.NoFetch, cache)
 				if cloneResult.FixedURL != "" {
 					return cloneResult
 				}

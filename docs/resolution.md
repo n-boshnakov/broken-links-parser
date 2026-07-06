@@ -32,13 +32,26 @@ go run ./cmd/broken-links-parser/ extract \
 
 The report gains **Fixed Link** and **Strategy** columns.
 
-## Local clone detection
+## Local clone detection and auto-cloning
 
-When `--repos-dir` is set, the resolver checks for the target repo at:
-1. `<repos-dir>/<owner>/<repo>` (e.g. `~/Documents/GitHub/gardener/gardener`)
-2. `<repos-dir>/<repo>` (e.g. `~/Documents/GitHub/gardener`)
+The resolver looks for a local clone of the target repo in this order:
 
-If found, it runs `git log` locally — faster and rate-limit-free. Before scanning, the tool runs `git fetch --quiet origin` to ensure the history is current. Skip with `--no-fetch` if you're offline or know the clone is up to date.
+1. `<repos-dir>/<owner>/<repo>` and `<repos-dir>/<repo>` (user-managed clones, highest priority)
+2. `<cache-dir>/<owner>/<repo>` (auto-managed cache)
+3. If not found in either, automatically clone into `--cache-dir` (unless `--no-cache` is set)
+4. GitHub API (fallback when cache is disabled or clone fails)
+
+When a clone is found or auto-cloned, `git fetch --quiet origin` runs before scanning to ensure the history is current. Skip with `--no-fetch` if you're offline.
+
+### Auto-cloning (`--cache-dir`)
+
+The tool automatically clones any GitHub repo it needs for resolution into a persistent cache directory (default `~/.cache/broken-links-parser/clones`). Clones use `--filter=blob:none --no-single-branch` — full commit history is downloaded (needed for rename/deletion detection) but file content is deferred.
+
+**First run:** expect 10–30 s per new repo being cloned. For a docforge manifest referencing 20 repos, the first run may add several minutes. Subsequent runs are fast — only `git fetch` is needed.
+
+**Disk space:** blobless clones of large repos are tens of MB each. 20 Gardener repos ≈ 500 MB–1 GB total in the cache.
+
+Use `--no-cache` to disable auto-cloning and fall back to the GitHub API (current pre-cache behaviour).
 
 ## AI resolution (`--ai`)
 
@@ -115,8 +128,10 @@ Fine-grained PATs are subject to organisation-level policies — SAP's enterpris
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--resolve` | `false` | Run resolution after validation |
-| `--repos-dir` | — | Directory containing local repo clones |
-| `--no-fetch` | `false` | Skip `git fetch` on local clones |
+| `--repos-dir` | — | Directory containing local repo clones (checked before cache) |
+| `--cache-dir` | `~/.cache/broken-links-parser/clones` | Directory for auto-cloned repos |
+| `--no-cache` | `false` | Disable auto-cloning; fall back to GitHub API |
+| `--no-fetch` | `false` | Skip `git fetch` on local and cached clones |
 | `--ai` | `false` | Enable AI-assisted resolution for external links |
 | `--wayback` | `false` | Enrich AI prompts with Wayback Machine context; use archive as fallback (requires `--ai`) |
 | `--apply-ai` | `false` | Allow AI suggestions to be applied by the repair stage (reserved for repair stage) |

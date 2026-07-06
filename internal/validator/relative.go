@@ -151,12 +151,29 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 }
 
 // closestAnchor returns the anchor from candidates with the smallest edit distance
-// to fragment. Returns empty string if candidates is empty or the best distance
-// exceeds a threshold (to avoid suggesting completely unrelated anchors).
+// to fragment. Prefix matches (fragment is a prefix of a candidate) are always accepted
+// regardless of distance — a renamed heading with a suffix like "-deprecated" should
+// always be suggested. Otherwise accepts if distance ≤ half the fragment length (max 10).
 func closestAnchor(fragment string, candidates []string) string {
 	if len(candidates) == 0 {
 		return ""
 	}
+
+	// First pass: exact prefix match — fragment is a prefix of a candidate.
+	// Pick the shortest such candidate (least added suffix).
+	prefixBest := ""
+	for _, c := range candidates {
+		if strings.HasPrefix(c, fragment+"-") || strings.HasPrefix(c, fragment+"_") {
+			if prefixBest == "" || len(c) < len(prefixBest) {
+				prefixBest = c
+			}
+		}
+	}
+	if prefixBest != "" {
+		return prefixBest
+	}
+
+	// Second pass: Levenshtein distance.
 	best := ""
 	bestDist := len(fragment) + 1
 	for _, c := range candidates {
@@ -166,8 +183,6 @@ func closestAnchor(fragment string, candidates []string) string {
 			best = c
 		}
 	}
-	// Only suggest if the edit distance is ≤ half the fragment length,
-	// capped at 10 — otherwise the suggestion is too different to be useful.
 	threshold := len(fragment)/2 + 1
 	if threshold > 10 {
 		threshold = 10

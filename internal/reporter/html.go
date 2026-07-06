@@ -147,6 +147,8 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			return "AI (low confidence)"
 		case types.StrategyWaybackAI:
 			return "Wayback + AI"
+		case "anchor-suggestion":
+			return "Closest match"
 		}
 		return r.Resolution.Strategy
 	},
@@ -254,7 +256,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
       <td><span class="badge {{.Type}}">{{.Type}}</span></td>
       <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
       <td>{{if isGitHubURL .Rel}}<a href="{{.Rel}}" target="_blank" rel="noopener">{{.Rel}}</a>{{else}}{{.Rel}}{{end}}</td>
-      {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}{{if suggestedFix .}} <span class="unresolved-reason">→ <a href="{{suggestedFix .}}">{{suggestedFix .}}</a></span>{{end}}</td>{{end}}
+      {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}</td>{{end}}
       {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}">{{strategyLabel .}}</span>{{end}}</td>{{end}}
     </tr>
   {{end}}
@@ -370,6 +372,21 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 			row.Result = &v
 			if !v.Valid && v.Reason != types.ReasonIgnored {
 				broken++
+			}
+			// When an anchor suggestion exists but no resolution was run,
+			// synthesise a resolution result so the suggestion appears in Fixed Link.
+			if v.SuggestedAnchor != "" && (i >= len(r.Resolutions) || r.Resolutions[i].FixedURL == "") {
+				u := l.URL
+				if idx := strings.Index(u, "#"); idx >= 0 {
+					u = u[:idx]
+				}
+				suggested := u + "#" + v.SuggestedAnchor
+				synth := types.ResolutionResult{
+					ValidationResult: v,
+					FixedURL:         suggested,
+					Strategy:         "anchor-suggestion",
+				}
+				row.Resolution = &synth
 			}
 		}
 		if i < len(r.Resolutions) {

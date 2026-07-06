@@ -25,9 +25,10 @@ type Options struct {
 	DocforgeStrict   bool   // when true, flag links valid on disk but not in the manifest
 
 	// Validation
-	Validate       bool
-	IgnorePatterns []string
-	IgnoreFile     string
+	Validate         bool
+	IgnorePatterns   []string
+	IgnoreFile       string
+	ScopedIgnoreFile string // path to sectioned .linkignore with per-repo patterns
 	Concurrency    int
 	Timeout        time.Duration
 	GitHubToken    string
@@ -35,6 +36,8 @@ type Options struct {
 	// Resolution
 	Resolve       bool
 	ReposDir      string
+	CacheDir      string // directory for auto-cloned repos; empty disables auto-cloning
+	NoCache       bool   // when true, disables auto-cloning
 	NoFetch       bool
 	AI            resolver.AIConfig
 	EnableAI      bool
@@ -70,7 +73,7 @@ func Extract(opts Options) ([]types.Link, docforge.SourceMap, error) {
 		return links, nil, nil
 	}
 
-	sm, err := docforge.ParseManifest(opts.DocforgeManifest, opts.ReposDir)
+	sm, err := docforge.ParseManifest(opts.DocforgeManifest, opts.ReposDir, opts.CacheDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing docforge manifest: %w", err)
 	}
@@ -113,6 +116,16 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 		patterns = append(patterns, filePatterns...)
 	}
 
+	// Load sectioned ignore file if specified (supports per-repo patterns).
+	var scopedIgnore *validator.ScopedIgnoreFile
+	if opts.ScopedIgnoreFile != "" {
+		si, err := validator.LoadScopedIgnoreFile(opts.ScopedIgnoreFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading scoped ignore file: %w", err)
+		}
+		scopedIgnore = &si
+	}
+
 	timeout := opts.Timeout
 	if timeout == 0 {
 		timeout = 15 * time.Second
@@ -126,6 +139,7 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 		Concurrency:    concurrency,
 		Timeout:        timeout,
 		IgnorePatterns: patterns,
+		ScopedIgnore:   scopedIgnore,
 		GitHubToken:    opts.GitHubToken,
 		RepoRoot:       opts.Root,
 		OnProgress:     opts.OnProgress,
@@ -152,6 +166,8 @@ func Resolve(validations []types.ValidationResult, opts Options) []types.Resolut
 	return resolver.Resolve(validations, resolver.ResolveOptions{
 		RepoRoot:      opts.Root,
 		ReposDir:      opts.ReposDir,
+		CacheDir:      opts.CacheDir,
+		NoCache:       opts.NoCache,
 		GitHubToken:   opts.GitHubToken,
 		AI:            opts.AI,
 		EnableAI:      opts.EnableAI,
