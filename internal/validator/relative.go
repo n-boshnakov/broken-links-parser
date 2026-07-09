@@ -150,16 +150,14 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 	return types.ValidationResult{Link: link, Valid: true}
 }
 
-// closestAnchor returns the anchor from candidates with the smallest edit distance
-// to fragment. Prefix matches (fragment is a prefix of a candidate) are always accepted
-// regardless of distance — a renamed heading with a suffix like "-deprecated" should
-// always be suggested. Otherwise accepts if distance ≤ half the fragment length (max 10).
+// closestAnchor returns the best matching anchor from candidates for the given fragment.
+// Tries passes in order: prefix match, substring match, Levenshtein distance.
 func closestAnchor(fragment string, candidates []string) string {
 	if len(candidates) == 0 {
 		return ""
 	}
 
-	// First pass: exact prefix match — fragment is a prefix of a candidate.
+	// Pass 1: exact prefix match — fragment is a prefix of a candidate.
 	// Pick the shortest such candidate (least added suffix).
 	prefixBest := ""
 	for _, c := range candidates {
@@ -173,7 +171,22 @@ func closestAnchor(fragment string, candidates []string) string {
 		return prefixBest
 	}
 
-	// Second pass: Levenshtein distance.
+	// Pass 2: substring match — fragment appears anywhere inside a candidate.
+	// Catches cases like "custom-domains" inside "using-a-custom-domains-config".
+	// Pick the shortest candidate that contains the fragment.
+	subBest := ""
+	for _, c := range candidates {
+		if strings.Contains(c, fragment) {
+			if subBest == "" || len(c) < len(subBest) {
+				subBest = c
+			}
+		}
+	}
+	if subBest != "" {
+		return subBest
+	}
+
+	// Pass 3: Levenshtein distance.
 	best := ""
 	bestDist := len(fragment) + 1
 	for _, c := range candidates {

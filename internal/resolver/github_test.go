@@ -17,18 +17,18 @@ func TestFindLocalClone(t *testing.T) {
 	repoPath := filepath.Join(dir, "gardener", "documentation")
 	_ = os.MkdirAll(filepath.Join(repoPath, ".git"), 0o755)
 
-	if p, ok := findLocalClone(dir, "", "gardener", "documentation", true); !ok || p != repoPath {
+	if p, ok := findLocalClone(dir, "", "gardener", "documentation", true, nil); !ok || p != repoPath {
 		t.Errorf("findLocalClone(dir, gardener, documentation) = %q, %v; want %q, true", p, ok, repoPath)
 	}
 	// Flat layout: dir/documentation
 	dir2 := t.TempDir()
 	repoPath2 := filepath.Join(dir2, "documentation")
 	_ = os.MkdirAll(filepath.Join(repoPath2, ".git"), 0o755)
-	if p, ok := findLocalClone(dir2, "", "gardener", "documentation", true); !ok || p != repoPath2 {
+	if p, ok := findLocalClone(dir2, "", "gardener", "documentation", true, nil); !ok || p != repoPath2 {
 		t.Errorf("flat layout: findLocalClone = %q, %v; want %q, true", p, ok, repoPath2)
 	}
 	// Not found
-	if _, ok := findLocalClone(t.TempDir(), "", "org", "missing", true); ok {
+	if _, ok := findLocalClone(t.TempDir(), "", "org", "missing", true, nil); ok {
 		t.Error("expected not found for missing repo")
 	}
 }

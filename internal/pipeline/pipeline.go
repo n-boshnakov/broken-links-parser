@@ -152,6 +152,12 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 		CacheFile:         opts.CacheFile,
 		CacheTTL:          opts.CacheTTL,
 		NoValidationCache: opts.NoValidationCache,
+		// Short TTL for domains that frequently change or rate-limit heavily.
+		DomainTTLs: map[string]time.Duration{
+			"pkg.go.dev":       1 * time.Hour,
+			"goreportcard.com": 1 * time.Hour,
+			"testgrid.k8s.io":  1 * time.Hour,
+		},
 	}
 
 	// Wire docforge strict mode when a manifest was provided.

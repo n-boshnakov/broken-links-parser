@@ -30,9 +30,10 @@ type ValidateOptions struct {
 	SourceMap        SourceMapper
 	OnProgress       func(n, total int)
 	// Validation result cache options.
-	CacheFile          string        // path to JSON cache file; empty disables caching
-	CacheTTL           time.Duration // how long cached results remain valid (default 24h)
-	NoValidationCache  bool          // when true, disables cache entirely
+	CacheFile          string                    // path to JSON cache file; empty disables caching
+	CacheTTL           time.Duration             // default TTL for cached results (default 24h)
+	DomainTTLs         map[string]time.Duration  // per-domain TTL overrides (e.g. "pkg.go.dev": 1h)
+	NoValidationCache  bool                      // when true, disables cache entirely
 }
 
 // Validate classifies each link as valid or broken.
@@ -129,7 +130,7 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 		// Cache check — must hold lock because goroutines write concurrently.
 		if useCache {
 			cacheMu.Lock()
-			cached, ok := cache.Get(il.link.URL, opts.CacheTTL)
+			cached, ok := cache.Get(il.link.URL, TTLFor(il.link.URL, opts.CacheTTL, opts.DomainTTLs))
 			cacheMu.Unlock()
 			if ok {
 				cached.Link = il.link

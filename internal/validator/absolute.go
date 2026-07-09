@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -10,25 +11,40 @@ import (
 
 const userAgent = "Mozilla/5.0 (compatible; broken-links-parser/1.0; +https://github.com/n-boshnakov/broken-links-parser)"
 
+// retryableStatus returns true for status codes that warrant a retry.
+func retryableStatus(status int) bool {
+	return status == 429 || status == 503 || status == 502 || status == 504
+}
+
 // ValidateAbsolute checks an absolute URL via HTTP HEAD, falling back to GET on 405.
-// client should have an appropriate Timeout set by the caller.
+// Retries up to 2 times with exponential backoff on 429/5xx transient errors.
 func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, githubToken string) types.ValidationResult {
 	if MatchesAnyPattern(link.URL, patterns) {
 		return types.ValidationResult{Link: link, Valid: true, Reason: types.ReasonIgnored}
 	}
 
-	// Non-HTTP schemes (mailto:, tel:, ftp:, etc.) cannot be checked via HTTP.
-	// If not explicitly ignored above, mark as ignored rather than erroring.
 	if !strings.HasPrefix(link.URL, "http://") && !strings.HasPrefix(link.URL, "https://") {
 		return types.ValidationResult{Link: link, Valid: true, Reason: types.ReasonIgnored}
 	}
 
-	status, err := headWithFallback(client, link.URL, githubToken)
-	if err != nil {
-		if isTimeout(err) {
-			return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonTimeout}
+	var status int
+	var err error
+	for attempt := 0; attempt <= 2; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1))*time.Second +
+				time.Duration(rand.Intn(500))*time.Millisecond
+			time.Sleep(backoff)
 		}
-		return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonHTTPError}
+		status, err = headWithFallback(client, link.URL, githubToken)
+		if err != nil {
+			if isTimeout(err) {
+				return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonTimeout}
+			}
+			return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonHTTPError}
+		}
+		if !retryableStatus(status) {
+			break
+		}
 	}
 
 	if status >= 200 && status < 400 {
@@ -38,7 +54,6 @@ func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, g
 }
 
 // CheckURL performs a HEAD→GET check on a raw URL string and returns true if reachable.
-// Timeouts and non-2xx/3xx responses return false. Used by the AI resolver to validate candidates.
 func CheckURL(rawURL string) bool {
 	client := &http.Client{Timeout: 10 * time.Second}
 	status, err := headWithFallback(client, rawURL, "")
@@ -48,9 +63,6 @@ func CheckURL(rawURL string) bool {
 func headWithFallback(client *http.Client, url, githubToken string) (int, error) {
 	resp, err := doRequest(client, http.MethodHead, url, githubToken)
 	if err != nil {
-		// Some servers violate HTTP/2 by sending a body on a HEAD response.
-		// Go's http2 stack rejects this with "received DATA on a HEAD request".
-		// Fall back to GET, same as we do for 405.
 		if strings.Contains(err.Error(), "received DATA on a HEAD request") {
 			resp2, err2 := doRequest(client, http.MethodGet, url, githubToken)
 			if err2 != nil {

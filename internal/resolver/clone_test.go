@@ -17,7 +17,7 @@ func TestEnsureCloneURL(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "owner", "repo")
 
 	// First call: should clone.
-	cloned := ensureCloneURL("file://"+srcDir, dest)
+	cloned := ensureCloneURL("file://"+srcDir, dest, nil)
 	if cloned == "" {
 		t.Skip("git clone not available in test environment")
 	}
@@ -26,7 +26,7 @@ func TestEnsureCloneURL(t *testing.T) {
 	}
 
 	// Second call: idempotent — returns dest without re-cloning.
-	cloned2 := ensureCloneURL("file://"+srcDir, dest)
+	cloned2 := ensureCloneURL("file://"+srcDir, dest, nil)
 	if cloned2 != dest {
 		t.Errorf("second call = %q, want %q", cloned2, dest)
 	}

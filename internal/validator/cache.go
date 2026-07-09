@@ -2,8 +2,10 @@ package validator
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
@@ -15,11 +17,10 @@ type CacheEntry struct {
 	CheckedAt time.Time              `json:"checked_at"`
 }
 
-// ValidationCache maps URL → CacheEntry. Load with LoadCache, save with Save.
+// ValidationCache maps URL → CacheEntry.
 type ValidationCache map[string]CacheEntry
 
-// LoadCache reads a JSON cache file. Returns an empty cache (not an error) if the file
-// does not exist, allowing first-run use without pre-creating the file.
+// LoadCache reads a JSON cache file. Returns empty cache if file doesn't exist.
 func LoadCache(path string) (ValidationCache, error) {
 	c := make(ValidationCache)
 	data, err := os.ReadFile(path)
@@ -30,14 +31,12 @@ func LoadCache(path string) (ValidationCache, error) {
 		return c, err
 	}
 	if err := json.Unmarshal(data, &c); err != nil {
-		// Corrupted cache — start fresh rather than failing the run.
 		return make(ValidationCache), nil
 	}
 	return c, nil
 }
 
-// Save writes the cache to path atomically (temp file + rename).
-// Creates parent directories on first use.
+// Save writes the cache to path atomically.
 func (c ValidationCache) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -53,9 +52,31 @@ func (c ValidationCache) Save(path string) error {
 	return os.Rename(tmp, path)
 }
 
+// TTLFor returns the effective TTL for a URL, checking per-domain overrides first.
+func TTLFor(rawURL string, defaultTTL time.Duration, domainTTLs map[string]time.Duration) time.Duration {
+	if len(domainTTLs) == 0 {
+		return defaultTTL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return defaultTTL
+	}
+	host := strings.TrimPrefix(u.Hostname(), "www.")
+	if ttl, ok := domainTTLs[host]; ok {
+		return ttl
+	}
+	// Check suffix matches (e.g. "pkg.go.dev" matches "pkg.go.dev")
+	for domain, ttl := range domainTTLs {
+		if strings.HasSuffix(host, domain) {
+			return ttl
+		}
+	}
+	return defaultTTL
+}
+
 // Get returns a cached result if the URL has a valid (non-expired) entry.
-func (c ValidationCache) Get(url string, ttl time.Duration) (types.ValidationResult, bool) {
-	entry, ok := c[url]
+func (c ValidationCache) Get(rawURL string, ttl time.Duration) (types.ValidationResult, bool) {
+	entry, ok := c[rawURL]
 	if !ok {
 		return types.ValidationResult{}, false
 	}
@@ -67,7 +88,6 @@ func (c ValidationCache) Get(url string, ttl time.Duration) (types.ValidationRes
 
 // Set stores a validation result for url with the current timestamp.
 func (c ValidationCache) Set(url string, result types.ValidationResult) {
-	// Store only the URL and type — SourceFile/offsets are link-instance-specific.
 	stripped := result
 	stripped.Link = types.Link{
 		URL:  result.Link.URL,

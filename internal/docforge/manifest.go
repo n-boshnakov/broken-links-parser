@@ -11,8 +11,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// failedClones tracks repos that failed to clone this run so we don't retry them.
 var (
 	failedClonesMu sync.Mutex
 	failedClones   = map[string]bool{}
@@ -32,14 +30,65 @@ type SourceMap map[string]SourceEntry
 
 // ParseManifest reads the root docforge manifest YAML and returns a SourceMap
 // containing all remote-sourced files discoverable from local clones.
-// reposDir is the directory containing local clones (e.g. ~/Documents/GitHub).
-// Warnings are printed for remote repos without a local clone.
+// Remote repos not found under reposDir are auto-cloned in parallel into cacheDir.
 func ParseManifest(manifestPath, reposDir, cacheDir string) (SourceMap, error) {
 	sm := make(SourceMap)
 	if err := parseManifestFile(manifestPath, reposDir, cacheDir, "", sm); err != nil {
 		return nil, err
 	}
+
+	// Pre-clone all referenced repos that are missing locally, in parallel.
+	if cacheDir != "" {
+		precloneRepos(sm, reposDir, cacheDir)
+		// Re-populate LocalFilePath for entries whose clone just became available.
+		for key, entry := range sm {
+			if entry.LocalFilePath == "" && entry.RepoURL != "" && entry.RepoFilePath != "" {
+				clone := findLocalClone(entry.RepoURL, reposDir, cacheDir)
+				if clone != "" {
+					entry.RepoLocalClone = clone
+					entry.LocalFilePath = filepath.Join(clone, filepath.FromSlash(entry.RepoFilePath))
+					sm[key] = entry
+				}
+			}
+		}
+	}
+
 	return sm, nil
+}
+
+// precloneRepos clones all repos referenced in sm that aren't already available locally.
+// Clones run in parallel (up to 4 concurrent) to reduce first-run latency.
+func precloneRepos(sm SourceMap, reposDir, cacheDir string) {
+	// Collect unique repo URLs that need cloning.
+	needed := map[string]bool{}
+	for _, entry := range sm {
+		if entry.RepoURL != "" && entry.RepoLocalClone == "" {
+			needed[entry.RepoURL] = true
+		}
+	}
+	if len(needed) == 0 {
+		return
+	}
+
+	type job struct{ repoURL string }
+	jobs := make(chan job, len(needed))
+	for u := range needed {
+		jobs <- job{u}
+	}
+	close(jobs)
+
+	const workers = 4
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				findLocalClone(j.repoURL, reposDir, cacheDir) // triggers clone if missing
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // --- YAML schema ---
