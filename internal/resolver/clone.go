@@ -9,38 +9,45 @@ import (
 	"sync"
 )
 
-// failedClones tracks repos that failed to clone this run so we don't retry them.
-var (
-	failedClonesMu sync.Mutex
-	failedClones   = map[string]bool{}
-)
+// CloneCache tracks per-run clone state: failed attempts and in-progress locks.
+// Create with NewCloneCache(); pass to ensureClone calls within one run.
+type CloneCache struct {
+	mu     sync.Mutex
+	failed map[string]bool
+}
+
+// NewCloneCache returns an empty CloneCache for a single run.
+func NewCloneCache() *CloneCache {
+	return &CloneCache{failed: make(map[string]bool)}
+}
 
 // ensureClone ensures a blobless clone of repoURL exists at <cacheDir>/<owner>/<repo>.
 // Returns the clone path on success, empty string on failure (warning printed).
-func ensureClone(repoURL, cacheDir string) string {
+func ensureClone(repoURL, cacheDir string, cc *CloneCache) string {
 	owner, repo := ownerRepo(repoURL)
 	if owner == "" || repo == "" {
 		return ""
 	}
 	dest := filepath.Join(cacheDir, owner, repo)
-	return ensureCloneURL(repoURL, dest)
+	return ensureCloneURL(repoURL, dest, cc)
 }
 
 // ensureCloneURL clones repoURL into dest if not already present.
-// Failed clone attempts are remembered for the lifetime of the process — no retries.
-func ensureCloneURL(repoURL, dest string) string {
+func ensureCloneURL(repoURL, dest string, cc *CloneCache) string {
 	// Already cloned.
 	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil {
 		return dest
 	}
 
 	// Skip if this URL already failed this run.
-	failedClonesMu.Lock()
-	if failedClones[repoURL] {
-		failedClonesMu.Unlock()
-		return ""
+	if cc != nil {
+		cc.mu.Lock()
+		if cc.failed[repoURL] {
+			cc.mu.Unlock()
+			return ""
+		}
+		cc.mu.Unlock()
 	}
-	failedClonesMu.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "cache: cannot create directory for %s: %v\n", repoURL, err)
@@ -54,9 +61,11 @@ func ensureCloneURL(repoURL, dest string) string {
 		repoURL, dest)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "cache: failed to clone %s: %v\n%s\n", repoURL, err, out)
-		failedClonesMu.Lock()
-		failedClones[repoURL] = true
-		failedClonesMu.Unlock()
+		if cc != nil {
+			cc.mu.Lock()
+			cc.failed[repoURL] = true
+			cc.mu.Unlock()
+		}
 		return ""
 	}
 	return dest

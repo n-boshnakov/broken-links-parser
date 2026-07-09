@@ -35,7 +35,7 @@ func parseGitHubURL(rawURL string) (owner, repo, branch, filePath string, ok boo
 // findLocalClone checks reposDir, then cacheDir, for a valid git repo matching owner/repo.
 // If cacheDir is non-empty and noCache is false and the repo is not found, it auto-clones it.
 // Returns the repo root path and whether it was found/cloned.
-func findLocalClone(reposDir, cacheDir, owner, repo string, noCache bool) (string, bool) {
+func findLocalClone(reposDir, cacheDir, owner, repo string, noCache bool, cc *CloneCache) (string, bool) {
 	// 1. Check reposDir first (user-managed clones take priority).
 	if reposDir != "" {
 		for _, p := range []string{
@@ -56,7 +56,7 @@ func findLocalClone(reposDir, cacheDir, owner, repo string, noCache bool) (strin
 		// 3. Auto-clone if not found and cache is enabled.
 		if !noCache {
 			repoURL := "https://github.com/" + owner + "/" + repo
-			if cloned := ensureClone(repoURL, cacheDir); cloned != "" {
+			if cloned := ensureClone(repoURL, cacheDir, cc); cloned != "" {
 				return cloned, true
 			}
 		}
@@ -65,7 +65,7 @@ func findLocalClone(reposDir, cacheDir, owner, repo string, noCache bool) (strin
 }
 
 // ResolveViaLocalClone resolves a broken absolute GitHub link using a local clone.
-func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir string, noCache, noFetch bool, cache *GitCache) types.ResolutionResult {
+func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir string, noCache, noFetch bool, cache *GitCache, cc *CloneCache) types.ResolutionResult {
 	owner, repo, _, filePath, ok := parseGitHubURL(result.Link.URL)
 	if !ok {
 		return types.ResolutionResult{ValidationResult: result}
@@ -76,7 +76,7 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir stri
 		filePath = filePath[:i]
 	}
 
-	clonePath, found := findLocalClone(reposDir, cacheDir, owner, repo, noCache)
+	clonePath, found := findLocalClone(reposDir, cacheDir, owner, repo, noCache, cc)
 	if !found {
 		return types.ResolutionResult{ValidationResult: result}
 	}

@@ -23,18 +23,20 @@ type ResolveOptions struct {
 // Valid results and IGNORED results are passed through unchanged.
 func Resolve(results []types.ValidationResult, opts ResolveOptions) []types.ResolutionResult {
 	cache := NewGitCache()
+	cloneCache := NewCloneCache()
+	parentCache := make(map[string]bool) // caches origin liveness checks within this run
 	out := make([]types.ResolutionResult, len(results))
 	for i, r := range results {
 		if r.Valid || r.Reason == types.ReasonIgnored {
 			out[i] = types.ResolutionResult{ValidationResult: r}
 			continue
 		}
-		out[i] = resolveOne(r, opts, cache)
+		out[i] = resolveOne(r, opts, cache, cloneCache, parentCache)
 	}
 	return out
 }
 
-func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache) types.ResolutionResult {
+func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache, cc *CloneCache, parentCache map[string]bool) types.ResolutionResult {
 	switch r.Link.Type {
 	case types.LinkTypeRelative, types.LinkTypeAnchor, types.LinkTypeImage:
 		if opts.RepoRoot != "" {
@@ -45,7 +47,7 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache) 
 			// Try local clone first; keep its result even if unresolved (it carries UnresolvedReason).
 			var cloneResult types.ResolutionResult
 			if opts.ReposDir != "" || opts.CacheDir != "" {
-				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.CacheDir, opts.NoCache, opts.NoFetch, cache)
+				cloneResult = ResolveViaLocalClone(r, opts.ReposDir, opts.CacheDir, opts.NoCache, opts.NoFetch, cache, cc)
 				if cloneResult.FixedURL != "" {
 					return cloneResult
 				}
@@ -78,7 +80,7 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache) 
 				}
 				// Check if the parent site is alive (only for 404s).
 				if r.StatusCode == 404 || r.Reason == types.ReasonHTTPError {
-					if parentURL, live := checkParentSite(r.Link.URL); live {
+					if parentURL, live := checkParentSite(r.Link.URL, parentCache); live {
 						wctx.ParentURL = parentURL
 					}
 				}

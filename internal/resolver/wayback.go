@@ -147,10 +147,8 @@ func fetchSnapshotContent(snapshotURL string) (title, excerpt string) {
 }
 
 // checkParentSite checks whether the root origin (scheme+host) of rawURL is alive.
-// Returns the origin URL and true if it responds 2xx/3xx.
-// Returns empty and false if the origin equals the full URL (already checked),
-// or if the URL is a GitHub URL (handled by the git resolver, not AI).
-func checkParentSite(rawURL string) (parentURL string, live bool) {
+// cache maps origin → liveness; pass nil to disable caching.
+func checkParentSite(rawURL string, cache map[string]bool) (parentURL string, live bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return
@@ -164,13 +162,29 @@ func checkParentSite(rawURL string) (parentURL string, live bool) {
 	if strings.TrimRight(rawURL, "/") == strings.TrimRight(origin, "/") {
 		return
 	}
+	// Check cache.
+	if cache != nil {
+		if cached, ok := cache[origin]; ok {
+			if cached {
+				return origin, true
+			}
+			return
+		}
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Head(origin)
 	if err != nil {
+		if cache != nil {
+			cache[origin] = false
+		}
 		return
 	}
 	resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+	isLive := resp.StatusCode >= 200 && resp.StatusCode < 400
+	if cache != nil {
+		cache[origin] = isLive
+	}
+	if isLive {
 		return origin, true
 	}
 	return
