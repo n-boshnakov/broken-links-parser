@@ -103,6 +103,16 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Resolution.IsWaybackFallback {
 			return "No live replacement found — see archived version: " + r.Resolution.FixedURL
 		}
+		// For anchor suggestions, show the corrected relative/anchor form as the label
+		// (the href is the full GitHub URL for easy navigation, but the label shows what
+		// the link should look like in the source file).
+		if r.Resolution.Strategy == "anchor-suggestion" && r.Result != nil && r.Result.SuggestedAnchor != "" {
+			u := r.URL
+			if i := strings.Index(u, "#"); i >= 0 {
+				u = u[:i]
+			}
+			return u + "#" + r.Result.SuggestedAnchor
+		}
 		return r.Resolution.FixedURL
 	},
 	"unresolvedReason": func(r reportRow) string {
@@ -381,6 +391,13 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 					u = u[:idx]
 				}
 				suggested := u + "#" + v.SuggestedAnchor
+				// If we have a GitHub source URL, resolve the relative suggestion to an
+				// absolute GitHub URL so the user can click through directly.
+				if strings.HasPrefix(sourceURL, "https://github.com/") {
+					if abs := resolveGitHubAnchorURL(sourceURL, u, v.SuggestedAnchor); abs != "" {
+						suggested = abs
+					}
+				}
 				synth := types.ResolutionResult{
 					ValidationResult: v,
 					FixedURL:         suggested,
@@ -391,10 +408,31 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 		}
 		if i < len(r.Resolutions) {
 			res := r.Resolutions[i]
-			row.Resolution = &res
+			// Only overwrite the anchor-suggestion synth when the resolution actually
+			// has a fixed URL, or when there is no anchor suggestion to show.
+			if res.FixedURL != "" || row.Resolution == nil {
+				row.Resolution = &res
+			}
 		}
 		rows[i] = row
 	}
+
+	// Deduplicate: if the same (sourceURL, link URL) pair appears multiple times — e.g. a
+	// self-referential anchor used repeatedly in one file — keep only the first row.
+	seen := make(map[string]bool, len(rows))
+	deduped := rows[:0]
+	for _, row := range rows {
+		key := row.Rel + "\x00" + row.URL
+		if seen[key] {
+			if row.Result != nil && !row.Result.Valid {
+				broken-- // undo the broken count increment for this duplicate
+			}
+			continue
+		}
+		seen[key] = true
+		deduped = append(deduped, row)
+	}
+	rows = deduped
 
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -427,4 +465,63 @@ func getDefaultBranch(repoRoot string) string {
 		return "main"
 	}
 	return "master"
+}
+
+// resolveGitHubAnchorURL builds an absolute GitHub URL for an anchor suggestion.
+// sourceURL is the GitHub blob URL of the file containing the broken link.
+// relTarget is the relative path portion of the broken link (without fragment).
+// anchor is the suggested anchor fragment.
+// Returns "" if sourceURL is not a recognised GitHub URL.
+func resolveGitHubAnchorURL(sourceURL, relTarget, anchor string) string {
+	// sourceURL: https://github.com/owner/repo/blob/branch/path/to/source.md
+	// Strip fragment and trailing slash from sourceURL first.
+	base := sourceURL
+	if i := strings.Index(base, "#"); i >= 0 {
+		base = base[:i]
+	}
+	// Split into prefix (https://github.com/owner/repo/blob/branch) and file path.
+	// Format: https://github.com/owner/repo/blob/branch/path/to/file
+	const ghPrefix = "https://github.com/"
+	if !strings.HasPrefix(base, ghPrefix) {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(base, ghPrefix), "/", 5)
+	// parts: [owner, repo, "blob", branch, path/to/source.md]
+	if len(parts) < 5 || parts[2] != "blob" {
+		return ""
+	}
+	repoBase := ghPrefix + parts[0] + "/" + parts[1] + "/blob/" + parts[3] + "/"
+	sourcePath := parts[4] // e.g. "docs/usage/security/shoot_serviceaccounts.md"
+
+	// Resolve relTarget relative to the directory of sourcePath.
+	if relTarget == "" {
+		// Anchor-only link — target is the source file itself.
+		return repoBase + sourcePath + "#" + anchor
+	}
+	dir := sourcePath
+	if i := strings.LastIndex(dir, "/"); i >= 0 {
+		dir = dir[:i+1]
+	} else {
+		dir = ""
+	}
+	// Walk the relative path segments.
+	resolved := dir + relTarget
+	// Normalise: collapse any ../ sequences.
+	segs := strings.Split(resolved, "/")
+	var clean []string
+	for _, s := range segs {
+		switch s {
+		case ".":
+			// skip
+		case "..":
+			if len(clean) > 0 {
+				clean = clean[:len(clean)-1]
+			}
+		default:
+			if s != "" {
+				clean = append(clean, s)
+			}
+		}
+	}
+	return repoBase + strings.Join(clean, "/") + "#" + anchor
 }

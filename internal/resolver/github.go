@@ -182,8 +182,15 @@ func ResolveViaGitHubAPI(result types.ValidationResult, token string) types.Reso
 }
 
 func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase string) types.ResolutionResult {
-	owner, repo, _, filePath, ok := parseGitHubURL(result.Link.URL)
+	owner, repo, branch, filePath, ok := parseGitHubURL(result.Link.URL)
 	if !ok {
+		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
+	}
+
+	// If the URL references a specific commit SHA (40 hex chars), the file at that
+	// commit may legitimately return 404 because the line range has changed or the
+	// file was renamed since. Don't report this as "deleted" — it's a pinned reference.
+	if isCommitSHA(branch) {
 		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
 	}
 
@@ -375,6 +382,19 @@ func findDeletionCommit(client *http.Client, owner, repo, filePath, token string
 }
 
 func isRateLimitError(err error) bool {	return strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "403")
+}
+
+// isCommitSHA returns true if s looks like a full 40-character git commit SHA.
+func isCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // rebuildGitHubURL replaces the file path portion of a GitHub blob URL with newPath,

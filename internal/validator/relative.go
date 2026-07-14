@@ -12,12 +12,13 @@ import (
 )
 
 var (
-	reMDHeading    = regexp.MustCompile(`^#{1,6}\s+(.+)`)
-	reHTMLHeading  = regexp.MustCompile(`(?i)<h[1-6][^>]*>([^<]+)</h[1-6]>`)
-	reNonAlnum     = regexp.MustCompile(`[^\p{L}\p{N}\- ]`)
-	reLineRange    = regexp.MustCompile(`^L\d+(-L\d+)?$`) // GitHub line-range anchors: L48 or L48-L55
-	reMDLink       = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`) // [text](url) → text
-	reBacktick     = regexp.MustCompile("`([^`]*)`")             // `code` → code (keep inner text)
+	reMDHeading     = regexp.MustCompile(`^#{1,6}\s+(.+)`)
+	reHTMLHeading   = regexp.MustCompile(`(?i)<h[1-6][^>]*>([^<]+)</h[1-6]>`)
+	reHTMLHeadingID = regexp.MustCompile(`(?i)<h[1-6][^>]*\sid="([^"]+)"`)
+	reNonAlnum      = regexp.MustCompile(`[^\p{L}\p{N}\- ]`)
+	reLineRange     = regexp.MustCompile(`^L\d+(-L\d+)?$`) // GitHub line-range anchors: L48 or L48-L55
+	reMDLink        = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`) // [text](url) → text
+	reBacktick      = regexp.MustCompile("`([^`]*)`")              // `code` → code (keep inner text)
 )
 
 // NormaliseAnchor converts a heading string to its GitHub-flavored anchor form.
@@ -62,6 +63,10 @@ func ExtractAnchors(path string) ([]string, error) {
 		}
 	}
 
+	// id attributes are used verbatim by GitHub as URL anchors — do not normalise.
+	for _, m := range reHTMLHeadingID.FindAllStringSubmatch(content, -1) {
+		base = append(base, m[1])
+	}
 	for _, m := range reHTMLHeading.FindAllStringSubmatch(content, -1) {
 		base = append(base, NormaliseAnchor(m[1]))
 	}
@@ -128,17 +133,20 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 		if reLineRange.MatchString(fragment) {
 			return types.ValidationResult{Link: link, Valid: true}
 		}
+		// Normalise the fragment the same way headings are normalised,
+		// so special chars like & and . in the fragment are handled correctly.
+		normFragment := NormaliseAnchor(fragment)
 		anchors, err := ExtractAnchors(targetPath)
 		if err != nil {
 			return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonFileNotFound}
 		}
 		for _, a := range anchors {
-			if a == strings.ToLower(fragment) {
+			if a == normFragment {
 				return types.ValidationResult{Link: link, Valid: true}
 			}
 		}
 		// No exact match — find the closest anchor as a suggestion.
-		suggested := closestAnchor(strings.ToLower(fragment), anchors)
+		suggested := closestAnchor(normFragment, anchors)
 		return types.ValidationResult{
 			Link:            link,
 			Valid:           false,
@@ -151,14 +159,14 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 }
 
 // closestAnchor returns the best matching anchor from candidates for the given fragment.
-// Tries passes in order: prefix match, substring match, Levenshtein distance.
+// Tries passes in order: prefix, substring, reverse-substring, reverse-prefix, Levenshtein.
 func closestAnchor(fragment string, candidates []string) string {
 	if len(candidates) == 0 {
 		return ""
 	}
 
-	// Pass 1: exact prefix match — fragment is a prefix of a candidate.
-	// Pick the shortest such candidate (least added suffix).
+	// Pass 1: fragment is a prefix of a candidate (e.g. #foo → #foo-deprecated).
+	// Pick the shortest such candidate.
 	prefixBest := ""
 	for _, c := range candidates {
 		if strings.HasPrefix(c, fragment+"-") || strings.HasPrefix(c, fragment+"_") {
@@ -171,8 +179,8 @@ func closestAnchor(fragment string, candidates []string) string {
 		return prefixBest
 	}
 
-	// Pass 2: substring match — fragment appears anywhere inside a candidate.
-	// Catches cases like "custom-domains" inside "using-a-custom-domains-config".
+	// Pass 2: fragment is a substring of a candidate
+	// (e.g. #custom-domains → #using-a-custom-domains-issuer).
 	// Pick the shortest candidate that contains the fragment.
 	subBest := ""
 	for _, c := range candidates {
@@ -186,7 +194,36 @@ func closestAnchor(fragment string, candidates []string) string {
 		return subBest
 	}
 
-	// Pass 3: Levenshtein distance.
+	// Pass 3: candidate is a substring of fragment
+	// (e.g. #use-case-3-monitoring-backup-health → #monitoring-backup-health).
+	// Pick the longest candidate that is contained in the fragment.
+	revSubBest := ""
+	for _, c := range candidates {
+		if strings.Contains(fragment, c) {
+			if revSubBest == "" || len(c) > len(revSubBest) {
+				revSubBest = c
+			}
+		}
+	}
+	if revSubBest != "" {
+		return revSubBest
+	}
+
+	// Pass 4: candidate is a prefix of fragment
+	// (e.g. #networkpolicy-controller-registrar → #networkpolicy-controller).
+	revPrefixBest := ""
+	for _, c := range candidates {
+		if strings.HasPrefix(fragment, c+"-") || strings.HasPrefix(fragment, c+"_") {
+			if revPrefixBest == "" || len(c) > len(revPrefixBest) {
+				revPrefixBest = c
+			}
+		}
+	}
+	if revPrefixBest != "" {
+		return revPrefixBest
+	}
+
+	// Pass 5: Levenshtein distance.
 	best := ""
 	bestDist := len(fragment) + 1
 	for _, c := range candidates {
@@ -197,13 +234,35 @@ func closestAnchor(fragment string, candidates []string) string {
 		}
 	}
 	threshold := len(fragment)/2 + 1
-	if threshold > 10 {
-		threshold = 10
+	// Raise cap for longer fragments to allow single-word insertions.
+	if threshold > 12 {
+		threshold = 12
 	}
-	if bestDist > threshold {
-		return ""
+	if bestDist <= threshold && best != "" {
+		return best
 	}
-	return best
+
+	// Pass 6: word-token overlap — handles word-reorder and leading-dash fragments.
+	// Requires ≥2 shared tokens and overlap/len(fragment tokens) ≥ 0.5.
+	fragTokens := filterEmpty(strings.Split(fragment, "-"))
+	if len(fragTokens) >= 2 {
+		bestOverlap, bestRatio := "", 0.0
+		for _, c := range candidates {
+			ct := filterEmpty(strings.Split(c, "-"))
+			shared := tokenOverlap(fragTokens, ct)
+			ratio := float64(shared) / float64(len(fragTokens))
+			if shared >= 2 && ratio >= 0.5 {
+				if ratio > bestRatio || (ratio == bestRatio && len(c) < len(bestOverlap)) {
+					bestRatio = ratio
+					bestOverlap = c
+				}
+			}
+		}
+		if bestOverlap != "" {
+			return bestOverlap
+		}
+	}
+	return ""
 }
 
 // levenshtein computes the edit distance between two strings.
@@ -247,4 +306,28 @@ func min3(a, b, c int) int {
 		return b
 	}
 	return c
+}
+
+func filterEmpty(ss []string) []string {
+	out := ss[:0]
+	for _, s := range ss {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func tokenOverlap(a, b []string) int {
+	m := make(map[string]bool, len(b))
+	for _, s := range b {
+		m[s] = true
+	}
+	n := 0
+	for _, s := range a {
+		if m[s] {
+			n++
+		}
+	}
+	return n
 }

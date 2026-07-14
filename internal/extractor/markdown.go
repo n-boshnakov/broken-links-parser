@@ -14,13 +14,16 @@ var (
 	reFenced = regexp.MustCompile("(?s)```[^`]*?```")
 	// Inline code spans: `...` (single backtick, no newlines).
 	reInlineCode = regexp.MustCompile("`[^`\n]+`")
+	// Footnote definitions: [^id]: ... — masked before link extraction to prevent
+	// the text portion being extracted as a link.
+	reFootnoteDef = regexp.MustCompile(`(?m)^\[\^[^\]]+\]:.*$`)
 
-	// ![alt](src)
-	reImage = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
+	// ![alt](src) — URL group allows balanced parentheses for URLs like Wikipedia.
+	reImage = regexp.MustCompile(`!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)`)
 	// Any [text](url) — we filter out images by checking the preceding byte.
-	reAnyInline = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
+	reAnyInline = regexp.MustCompile(`\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)`)
 	// [text](#anchor) — anchor-only inline links.
-	reAnchor = regexp.MustCompile(`\[([^\]]+)\]\((#[^)]*)\)`)
+	reAnchor = regexp.MustCompile(`\[([^\]]+)\]\((#(?:[^()]|\([^()]*\))*)\)`)
 	// Reference definitions: [ref]: url
 	reRefDef = regexp.MustCompile(`(?m)^\[([^\]]+)\]:\s+(\S+)`)
 	// Reference usages: [text][ref]
@@ -46,8 +49,8 @@ func ExtractMarkdown(path string) ([]types.Link, error) {
 	return links, nil
 }
 
-// maskCodeRegions returns a copy of data where fenced blocks and inline code
-// spans are replaced with spaces, preserving byte positions of everything else.
+// maskCodeRegions returns a copy of data where fenced blocks, inline code spans,
+// and footnote definitions are replaced with spaces, preserving byte positions.
 func maskCodeRegions(data []byte) []byte {
 	out := make([]byte, len(data))
 	copy(out, data)
@@ -59,6 +62,29 @@ func maskCodeRegions(data []byte) []byte {
 	for _, loc := range reInlineCode.FindAllIndex(out, -1) {
 		for i := loc[0]; i < loc[1]; i++ {
 			out[i] = ' '
+		}
+	}
+	// Mask footnote definitions so the text inside [^id]: [Text](url)
+	// is not extracted as a link. We mask only the "[^id]: " prefix —
+	// the URL portion remains extractable as an absolute link.
+	for _, loc := range reFootnoteDef.FindAllIndex(out, -1) {
+		// Find the first '[' that starts a link after the footnote marker.
+		// Mask up to that point so the URL inside is still captured.
+		lineStart := loc[0]
+		lineEnd := loc[1]
+		// Scan for the second '[' (the link text bracket) and mask up to it.
+		foundColon := false
+		for i := lineStart; i < lineEnd; i++ {
+			if out[i] == ':' && !foundColon {
+				foundColon = true
+			}
+			if foundColon && out[i] == '[' {
+				// Mask from line start to just before this '['.
+				for j := lineStart; j < i; j++ {
+					out[j] = ' '
+				}
+				break
+			}
 		}
 	}
 	return out

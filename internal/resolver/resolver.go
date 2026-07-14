@@ -21,17 +21,29 @@ type ResolveOptions struct {
 
 // Resolve attempts to find a replacement URL for each broken ValidationResult.
 // Valid results and IGNORED results are passed through unchanged.
+// Each unique broken URL is resolved at most once per call; subsequent links
+// with the same URL reuse the cached ResolutionResult with updated Link metadata.
 func Resolve(results []types.ValidationResult, opts ResolveOptions) []types.ResolutionResult {
 	cache := NewGitCache()
 	cloneCache := NewCloneCache()
-	parentCache := make(map[string]bool) // caches origin liveness checks within this run
+	parentCache := make(map[string]bool)
+	resolvedByURL := make(map[string]types.ResolutionResult) // per-run resolution cache
 	out := make([]types.ResolutionResult, len(results))
 	for i, r := range results {
 		if r.Valid || r.Reason == types.ReasonIgnored {
 			out[i] = types.ResolutionResult{ValidationResult: r}
 			continue
 		}
-		out[i] = resolveOne(r, opts, cache, cloneCache, parentCache)
+		// Reuse resolution result for URLs already resolved this run.
+		if cached, ok := resolvedByURL[r.Link.URL]; ok {
+			reused := cached
+			reused.ValidationResult = r // preserve per-link source metadata
+			out[i] = reused
+			continue
+		}
+		res := resolveOne(r, opts, cache, cloneCache, parentCache)
+		resolvedByURL[r.Link.URL] = res
+		out[i] = res
 	}
 	return out
 }

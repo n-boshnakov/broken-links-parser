@@ -85,3 +85,24 @@ func TestResolve_WaybackFallback(t *testing.T) {
 		t.Errorf("UnresolvedReason = %q, want EXTERNAL_NO_AI", res[0].UnresolvedReason)
 	}
 }
+
+func TestResolve_URLResolutionReuse(t *testing.T) {
+	url := "https://example.com/broken-page"
+	results := []types.ValidationResult{
+		{Link: types.Link{URL: url, Type: types.LinkTypeAbsolute, SourceFile: "file-a.md"}, Valid: false, Reason: types.ReasonHTTPError, StatusCode: 404},
+		{Link: types.Link{URL: url, Type: types.LinkTypeAbsolute, SourceFile: "file-b.md"}, Valid: false, Reason: types.ReasonHTTPError, StatusCode: 404},
+	}
+	out := Resolve(results, ResolveOptions{})
+	if len(out) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(out))
+	}
+	if out[0].ValidationResult.Link.SourceFile != "file-a.md" {
+		t.Errorf("result[0] SourceFile = %q, want file-a.md", out[0].ValidationResult.Link.SourceFile)
+	}
+	if out[1].ValidationResult.Link.SourceFile != "file-b.md" {
+		t.Errorf("result[1] SourceFile = %q, want file-b.md", out[1].ValidationResult.Link.SourceFile)
+	}
+	if out[0].FixedURL != out[1].FixedURL {
+		t.Errorf("expected same FixedURL for both, got %q and %q", out[0].FixedURL, out[1].FixedURL)
+	}
+}
