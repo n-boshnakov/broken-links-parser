@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
@@ -12,7 +13,8 @@ type ResolveOptions struct {
 	ReposDir      string // parent directory containing local clones (e.g. ~/Documents/GitHub)
 	CacheDir      string // directory for auto-cloned repos; empty disables auto-cloning
 	NoCache       bool   // when true, disables auto-cloning (falls back to API only)
-	GitHubToken   string
+	GitHubToken   string            // deprecated: use GitHubTokens
+	GitHubTokens  map[string]string // host → token; takes precedence over GitHubToken
 	AI            AIConfig
 	EnableAI      bool
 	EnableWayback bool
@@ -55,7 +57,7 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache, 
 			return ResolveRelative(r, opts.RepoRoot, opts.NoFetch, cache)
 		}
 	case types.LinkTypeAbsolute:
-		if isGitHubLink(r.Link.URL) {
+		if isGitHubLink(r.Link.URL, opts.GitHubTokens) {
 			// Try local clone first; keep its result even if unresolved (it carries UnresolvedReason).
 			var cloneResult types.ResolutionResult
 			if opts.ReposDir != "" || opts.CacheDir != "" {
@@ -65,7 +67,7 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache, 
 				}
 			}
 			// Fall back to GitHub API; it always sets UnresolvedReason on failure.
-			apiResult := ResolveViaGitHubAPI(r, opts.GitHubToken)
+			apiResult := ResolveViaGitHubAPI(r, opts.GitHubTokens)
 			if apiResult.FixedURL != "" {
 				return apiResult
 			}
@@ -126,7 +128,16 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache, 
 	return types.ResolutionResult{ValidationResult: r}
 }
 
-func isGitHubLink(u string) bool {
-	return strings.HasPrefix(u, "https://github.com/") ||
-		strings.HasPrefix(u, "https://raw.githubusercontent.com/")
+// isGitHubLink returns true for github.com URLs and any host present in the token map.
+func isGitHubLink(u string, tokens map[string]string) bool {
+	if strings.HasPrefix(u, "https://github.com/") ||
+		strings.HasPrefix(u, "https://raw.githubusercontent.com/") {
+		return true
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	_, known := tokens[parsed.Hostname()]
+	return known
 }

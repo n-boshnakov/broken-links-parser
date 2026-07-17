@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -58,8 +59,8 @@ var extractCmd = &cobra.Command{
 
 		// Stage 2: Validate
 		if opts.Validate {
-			if opts.GitHubToken != "" {
-				fmt.Println("GitHub token detected — authenticated requests will be used for github.com URLs.")
+			if len(opts.GitHubTokens) > 0 {
+				fmt.Printf("GitHub tokens configured for %d host(s) — authenticated requests enabled.\n", len(opts.GitHubTokens))
 			}
 			total := len(links)
 			fmt.Printf("Validating %d links (concurrency=%d, timeout=%s)…\n", total, opts.Concurrency, opts.Timeout)
@@ -172,6 +173,10 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 	docforgeStrict, _ := cmd.Flags().GetBool("docforge-strict")
 	htmlPath, _ := cmd.Flags().GetString("html")
 
+	// Build multi-host token map.
+	githubTokensFlag, _ := cmd.Flags().GetStringToString("github-tokens")
+	githubTokens := loadGitHubTokens(githubTokensFlag)
+
 	return pipeline.Options{
 		Root:           rootDir,
 		Dirs:           dirs,
@@ -185,7 +190,7 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 		CacheTTL:          cacheTTL,
 		NoValidationCache: noValidationCache,
 		Timeout:        timeout,
-		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
+		GitHubTokens:   githubTokens,
 		Resolve:        resolve,
 		ReposDir:       reposDir,
 		CacheDir:       cacheDir,
@@ -224,7 +229,51 @@ func init() {
 	extractCmd.Flags().Bool("wayback", false, "Enrich AI resolution with Wayback Machine context and use as fallback (requires --ai)")
 	extractCmd.Flags().String("docforge-manifest", "", "Path to root docforge manifest YAML; enables extraction from remote-sourced files via local clones")
 	extractCmd.Flags().Bool("docforge-strict", false, "Flag valid links whose target file is not included in the docforge manifest (requires --docforge-manifest)")
+	extractCmd.Flags().StringToString("github-tokens", nil, "Per-host GitHub token env var mapping, e.g. github.tools.sap=GITHUB_TOOLS_SAP_TOKEN (comma-separated)")
 	rootCmd.AddCommand(extractCmd)
+}
+
+// loadGitHubTokens builds a host→token map.
+// explicit maps host→envVarName (from --github-tokens flag); its values override convention.
+// Convention: env vars matching GITHUB_<SEGMENT>_TOKEN where SEGMENT (screaming-snake) maps
+// back to a hostname by lowercasing and replacing underscores with dots.
+// Special case: GITHUB_TOKEN (no segment) → github.com.
+func loadGitHubTokens(explicit map[string]string) map[string]string {
+	tokens := make(map[string]string)
+
+	// Seed github.com from the well-known GITHUB_TOKEN.
+	if v := os.Getenv("GITHUB_TOKEN"); v != "" {
+		tokens["github.com"] = v
+	}
+
+	// Convention scan: GITHUB_<SEGMENT>_TOKEN
+	re := regexp.MustCompile(`^GITHUB_(.+)_TOKEN$`)
+	for _, env := range os.Environ() {
+		key, val, ok := strings.Cut(env, "=")
+		if !ok || val == "" {
+			continue
+		}
+		m := re.FindStringSubmatch(key)
+		if m == nil {
+			continue
+		}
+		// Derive hostname: lowercase, underscores → dots.
+		// e.g. TOOLS_SAP → tools.sap → github.tools.sap
+		segment := strings.ToLower(m[1])
+		host := "github." + strings.ReplaceAll(segment, "_", ".")
+		if _, already := tokens[host]; !already {
+			tokens[host] = val
+		}
+	}
+
+	// Explicit overrides from --github-tokens flag (host=ENVVAR).
+	for host, envVar := range explicit {
+		if v := os.Getenv(envVar); v != "" {
+			tokens[host] = v
+		}
+	}
+
+	return tokens
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from it.

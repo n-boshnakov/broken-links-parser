@@ -93,3 +93,16 @@ func TestResolveViaGitHubAPI_Found(t *testing.T) {
 		t.Errorf("Strategy = %q", res.Strategy)
 	}
 }
+
+func TestAPIBaseForHost(t *testing.T) {
+	if got := apiBaseForHost("github.com"); got != "https://api.github.com" {
+		t.Errorf("github.com: got %q", got)
+	}
+	if got := apiBaseForHost("github.tools.sap"); got != "https://github.tools.sap/api/v3" {
+		t.Errorf("github.tools.sap: got %q", got)
+	}
+	if got := apiBaseForHost("github.wdf.sap.corp"); got != "https://github.wdf.sap.corp/api/v3" {
+		t.Errorf("github.wdf.sap.corp: got %q", got)
+	}
+}
+
