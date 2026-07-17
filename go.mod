@@ -5,9 +5,7 @@ go 1.22
 require (
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/net v0.26.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
-require (
-	github.com/spf13/pflag v1.0.5 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
+require github.com/spf13/pflag v1.0.5 // indirect

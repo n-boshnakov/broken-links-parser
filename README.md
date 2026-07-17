@@ -60,6 +60,21 @@ go run ./cmd/broken-links-parser/ extract \
 
 Requires `GITHUB_TOKEN` and `AI_API_KEY` in `.env`. See [docs/resolution.md](docs/resolution.md) for token setup.
 
+For internal GitHub Enterprise hosts, add a token per host using the naming convention `GITHUB_<HOST>_TOKEN`, where the hostname is uppercased and dots/hyphens replaced with underscores. These are auto-discovered — no flag needed:
+
+```sh
+# .env
+GITHUB_TOKEN=ghp_...                  # → github.com
+GITHUB_TOOLS_SAP_TOKEN=ghp_...        # → github.tools.sap
+GITHUB_WDF_SAP_CORP_TOKEN=ghp_...     # → github.wdf.sap.corp
+```
+
+If the naming convention is ambiguous (hyphens vs dots both become `_`), use the `--github-tokens` flag to map hosts to env var names explicitly:
+
+```sh
+--github-tokens github.tools.sap=GITHUB_TOOLS_SAP_TOKEN,github.wdf.sap.corp=GITHUB_WDF_SAP_CORP_TOKEN
+```
+
 ## Run tests
 
 ```sh
@@ -73,6 +88,11 @@ Copy `.env.example` (or create `.env`) with the following keys:
 ```
 # GitHub token — classic PAT with public_repo scope recommended
 GITHUB_TOKEN=ghp_...
+
+# Additional GitHub Enterprise hosts: GITHUB_<HOST>_TOKEN convention
+# Uppercase the hostname, replace dots and hyphens with underscores
+GITHUB_TOOLS_SAP_TOKEN=ghp_...        # → github.tools.sap
+GITHUB_WDF_SAP_CORP_TOKEN=ghp_...     # → github.wdf.sap.corp
 
 # AI resolution (required only with --ai flag)
 AI_API_KEY=sk-...

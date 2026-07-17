@@ -24,7 +24,8 @@ type ValidateOptions struct {
 	Timeout          time.Duration
 	IgnorePatterns   []string
 	ScopedIgnore     *ScopedIgnoreFile
-	GitHubToken      string
+	GitHubToken      string            // deprecated: use GitHubTokens
+	GitHubTokens     map[string]string // host → token; takes precedence over GitHubToken
 	RepoRoot         string
 	DocforgeStrict   bool
 	SourceMap        SourceMapper
@@ -146,7 +147,7 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := ValidateAbsolute(il.link, client, linkPatterns, opts.GitHubToken)
+			r := ValidateAbsolute(il.link, client, linkPatterns, opts.GitHubTokens)
 			results[il.idx] = r
 			if useCache {
 				cacheMu.Lock()

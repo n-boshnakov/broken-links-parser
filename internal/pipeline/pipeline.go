@@ -31,7 +31,8 @@ type Options struct {
 	ScopedIgnoreFile string // path to sectioned .linkignore with per-repo patterns
 	Concurrency    int
 	Timeout        time.Duration
-	GitHubToken    string
+	GitHubToken    string            // deprecated: use GitHubTokens
+	GitHubTokens   map[string]string // host → token
 
 	// Validation result cache.
 	CacheFile         string        // path to JSON cache file; default ~/.cache/broken-links-parser/validation.json
@@ -147,6 +148,7 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 		IgnorePatterns:    patterns,
 		ScopedIgnore:      scopedIgnore,
 		GitHubToken:       opts.GitHubToken,
+		GitHubTokens:      opts.GitHubTokens,
 		RepoRoot:          opts.Root,
 		OnProgress:        opts.OnProgress,
 		CacheFile:         opts.CacheFile,
@@ -185,6 +187,7 @@ func Resolve(validations []types.ValidationResult, opts Options) []types.Resolut
 		CacheDir:      opts.CacheDir,
 		NoCache:       opts.NoCache,
 		GitHubToken:   opts.GitHubToken,
+		GitHubTokens:  opts.GitHubTokens,
 		AI:            opts.AI,
 		EnableAI:      opts.EnableAI,
 		EnableWayback: opts.EnableWayback,

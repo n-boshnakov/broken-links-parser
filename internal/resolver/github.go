@@ -15,11 +15,19 @@ import (
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
 )
 
-// parseGitHubURL extracts owner, repo, branch, file path, and fragment from a github.com URL.
-// Supports: https://github.com/owner/repo/blob/branch/path/to/file#anchor
+// apiBaseForHost returns the GitHub REST API base URL for the given hostname.
+func apiBaseForHost(host string) string {
+	if host == "github.com" {
+		return "https://api.github.com"
+	}
+	return "https://" + host + "/api/v3"
+}
+
+// parseGitHubURL extracts owner, repo, branch, file path, and fragment from a GitHub URL.
+// Supports: https://<host>/owner/repo/blob/branch/path/to/file#anchor
 func parseGitHubURL(rawURL string) (owner, repo, branch, filePath string, ok bool) {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Host != "github.com" {
+	if err != nil || u.Host == "" {
 		return
 	}
 	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 5)
@@ -116,8 +124,8 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir stri
 
 // buildFileIndex fetches the Git Trees API for owner/repo and returns a map
 // of basename → full tree path for all blob entries.
-func buildFileIndex(client *http.Client, owner, repo, token string) (map[string]string, error) {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/HEAD?recursive=1", owner, repo)
+func buildFileIndex(client *http.Client, apiBase, owner, repo, token string) (map[string]string, error) {
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/HEAD?recursive=1", apiBase, owner, repo)
 	return buildFileIndexFromURL(client, apiURL, token)
 }
 
@@ -177,8 +185,15 @@ func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[strin
 }
 
 // ResolveViaGitHubAPI resolves a broken absolute GitHub link using the GitHub API.
-func ResolveViaGitHubAPI(result types.ValidationResult, token string) types.ResolutionResult {
-	return resolveViaGitHubAPIWithBase(result, token, "https://api.github.com")
+func ResolveViaGitHubAPI(result types.ValidationResult, tokens map[string]string) types.ResolutionResult {
+	u, err := url.Parse(result.Link.URL)
+	if err != nil {
+		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
+	}
+	host := u.Hostname()
+	token := tokens[host]
+	apiBase := apiBaseForHost(host)
+	return resolveViaGitHubAPIWithBase(result, token, apiBase)
 }
 
 func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase string) types.ResolutionResult {
@@ -193,6 +208,9 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 	if isCommitSHA(branch) {
 		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
 	}
+
+	u, _ := url.Parse(result.Link.URL)
+	webBase := "https://" + u.Host // e.g. https://github.tools.sap
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	// Strip fragment before file path lookup.
@@ -229,9 +247,9 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 	switch len(matches) {
 	case 0:
 		// Not in current tree — check if the last commit touching this path was a rename or deletion.
-		if sha := findDeletionCommit(client, owner, repo, filePath, token); sha != "" {
+		if sha := findDeletionCommit(client, apiBase, owner, repo, filePath, token); sha != "" {
 			// Inspect the commit: if it's a rename, return the new path as the fix.
-			if newPath := findRenamedPath(client, owner, repo, sha, filePath, token); newPath != "" {
+			if newPath := findRenamedPath(client, apiBase, owner, repo, sha, filePath, token); newPath != "" {
 				fixedURL := rebuildGitHubURL(result.Link.URL, newPath)
 				return types.ResolutionResult{
 					ValidationResult: result,
@@ -241,7 +259,7 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 				}
 			}
 			// Commit exists but was a deletion, not a rename.
-			fixedURL := fmt.Sprintf("https://github.com/%s/%s/commit/%s", owner, repo, sha)
+			fixedURL := fmt.Sprintf("%s/%s/%s/commit/%s", webBase, owner, repo, sha)
 			return types.ResolutionResult{
 				ValidationResult: result,
 				FixedURL:         fixedURL,
@@ -264,8 +282,8 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 		}
 	default:
 		// Multiple files share the same basename — use commit history to find the exact rename.
-		if sha := findRenameCommit(client, owner, repo, filePath, token); sha != "" {
-			newPath := findRenamedPath(client, owner, repo, sha, filePath, token)
+		if sha := findRenameCommit(client, apiBase, owner, repo, filePath, token); sha != "" {
+			newPath := findRenamedPath(client, apiBase, owner, repo, sha, filePath, token)
 			if newPath != "" {
 				fixedURL := rebuildGitHubURL(result.Link.URL, newPath)
 				return types.ResolutionResult{
@@ -314,14 +332,14 @@ func classifyAPIError(err error) string {
 
 // findRenameCommit returns the SHA of the last commit that touched filePath.
 // Same as findDeletionCommit — both just need the last touching commit.
-func findRenameCommit(client *http.Client, owner, repo, filePath, token string) string {
-	return findDeletionCommit(client, owner, repo, filePath, token)
+func findRenameCommit(client *http.Client, apiBase, owner, repo, filePath, token string) string {
+	return findDeletionCommit(client, apiBase, owner, repo, filePath, token)
 }
 
 // findRenamedPath inspects a commit's files via the GitHub API and returns the new path
 // if the commit contains a rename from oldPath.
-func findRenamedPath(client *http.Client, owner, repo, sha, oldPath, token string) string {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", owner, repo, sha)
+func findRenamedPath(client *http.Client, apiBase, owner, repo, sha, oldPath, token string) string {
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/commits/%s", apiBase, owner, repo, sha)
 	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
 	if err != nil {
 		return ""
@@ -356,9 +374,9 @@ func findRenamedPath(client *http.Client, owner, repo, sha, oldPath, token strin
 
 // findDeletionCommit queries the GitHub commits API for the last commit that touched
 // the given file path and returns its SHA (the deletion commit).
-func findDeletionCommit(client *http.Client, owner, repo, filePath, token string) string {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits?path=%s&per_page=1",
-		owner, repo, url.QueryEscape(filePath))
+func findDeletionCommit(client *http.Client, apiBase, owner, repo, filePath, token string) string {
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/commits?path=%s&per_page=1",
+		apiBase, owner, repo, url.QueryEscape(filePath))
 	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
 	if err != nil {
 		return ""
