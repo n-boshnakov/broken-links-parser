@@ -66,13 +66,10 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache, 
 					return cloneResult
 				}
 			}
-			// Fall back to GitHub API; it always sets UnresolvedReason on failure.
-			apiResult := ResolveViaGitHubAPI(r, opts.GitHubTokens)
-			if apiResult.FixedURL != "" {
-				return apiResult
-			}
-			// Return the API result (carries the best UnresolvedReason, e.g. API_BLOCKED).
-			return apiResult
+			// Fall back to GitHub API; it always sets UnresolvedReason on failure,
+			// so its result carries either the fix or the best UnresolvedReason
+			// (e.g. API_BLOCKED) either way.
+			return ResolveViaGitHubAPI(r, opts.GitHubTokens)
 		} else if opts.EnableAI && opts.AI.APIKey != "" {
 			// Skip AI for bot-blocked sites (403) — the page likely exists, just blocks automated requests.
 			if r.StatusCode == 403 || r.StatusCode == 429 {

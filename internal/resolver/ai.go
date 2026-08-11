@@ -72,7 +72,7 @@ func ResolveViaAI(result types.ValidationResult, cfg AIConfig, wctx WaybackConte
 // ── Anthropic native API ──────────────────────────────────────────────────────
 
 func resolveViaAnthropic(result types.ValidationResult, cfg AIConfig, wctx WaybackContext) types.ResolutionResult {
-	// ponytail: BaseURL may be overridden in tests; production always uses anthropicAPIURL
+	// BaseURL may be overridden in tests; production always uses anthropicAPIURL.
 	apiURL := anthropicAPIURL
 	if cfg.BaseURL != "" {
 		apiURL = cfg.BaseURL

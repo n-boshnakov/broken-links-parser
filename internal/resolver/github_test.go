@@ -106,3 +106,38 @@ func TestAPIBaseForHost(t *testing.T) {
 	}
 }
 
+func TestRebuildGitHubURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+		newPath  string
+		want     string
+	}{
+		{
+			name:     "github.com preserves host",
+			original: "https://github.com/gardener/gardener/blob/master/docs/old/logging.md",
+			newPath:  "docs/new/logging.md",
+			want:     "https://github.com/gardener/gardener/blob/master/docs/new/logging.md",
+		},
+		{
+			name:     "enterprise host is preserved",
+			original: "https://github.tools.sap/kubernetes/docs/blob/main/setup/install.md",
+			newPath:  "setup/getting-started/install.md",
+			want:     "https://github.tools.sap/kubernetes/docs/blob/main/setup/getting-started/install.md",
+		},
+		{
+			name:     "fragment is carried over",
+			original: "https://github.tools.sap/org/repo/blob/main/a/b.md#section",
+			newPath:  "c/d.md",
+			want:     "https://github.tools.sap/org/repo/blob/main/c/d.md#section",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rebuildGitHubURL(tt.original, tt.newPath); got != tt.want {
+				t.Errorf("rebuildGitHubURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+

@@ -30,8 +30,8 @@ Adds **Fixed Link** and **Strategy** columns.
 - Fixed links are clickable
 - Deleted files show `"Deleted in commit: <url>"` linking to the deletion commit
 - Wayback fallbacks show `"No live replacement found — see archived version: <url>"`
-- AI suggestions show a yellow `AI (low confidence)` or `Wayback + AI` badge
-- Anchor suggestions show a grey `Closest match` badge — the nearest heading when `ANCHOR_NOT_FOUND`
+- AI suggestions show a Yellow `AI (low confidence)` or `Wayback + AI` badge
+- Anchor suggestions show a Grey `Closest match` badge — the nearest heading when `ANCHOR_NOT_FOUND`
 - Unresolved links show an italicised reason explaining why no fix was found
 
 ```sh
@@ -63,9 +63,9 @@ Toggle one or more link types to show only those rows:
 
 | Chip | Shows |
 |------|-------|
-| `Broken` | Links that returned an error (4xx, 5xx, timeout, file not found) |
+| `Broken` | Links that returned an error (4xx/5xx, timeout, missing file, or no matching anchor) |
 | `Valid` | Links that resolved successfully |
-| `Ignored` | Links skipped due to `.linkignore` or `--ignore-pattern` |
+| `Ignored` | Links skipped by an ignore pattern (`.linkignore`, `--ignore-pattern`, `--ignore-file`, or `--scoped-ignore-file`) |
 | `Not in manifest` | Links valid on disk but not included in the docforge manifest (`--docforge-strict` only) |
 
 ### Fixed chips *(available when `--resolve` was used)*
@@ -87,7 +87,7 @@ The **Clear all** button resets all chips and the search box at once.
 
 ## Sorting
 
-Click any column header to sort that column ascending. Click again to reverse. Sorting works on the currently visible rows (filtered results sort independently of hidden rows).
+Click any column header to sort that column ascending. Click again to reverse. Only the currently visible (filtered) rows are sorted.
 
 ## Badges
 
@@ -107,4 +107,4 @@ Click any column header to sort that column ascending. Click again to reverse. S
 
 ## Source file column
 
-Source files are shown as clickable GitHub URLs pointing to the file in the upstream repository — both for files in the primary scanned repo and for files pulled from remote repos via a docforge manifest.
+Source files are shown as clickable URLs pointing to the file in the upstream repository — both for files in the primary scanned repo and for files pulled from remote repos via a docforge manifest. The upstream URL is derived from the repo's git remote (preferring `upstream` over `origin`) and its detected default branch, so GitHub Enterprise sources link to the correct host. When no remote can be determined, the column falls back to the file's path relative to the scan root.
