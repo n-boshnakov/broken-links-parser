@@ -1,6 +1,6 @@
 # Link Extraction
 
-The extractor is the first pipeline stage. It walks `.md` and `.html` files in a repository and returns every link it finds, along with its type, the anchor/alt text, and the byte offset of the URL in the source file. (The byte offsets are captured now so a future repair stage can rewrite links in place.)
+The extractor is the first pipeline stage. It walks `.md` and `.html` files in a repository and returns every link it finds, along with its type, the anchor/alt text, and the byte offset of the URL in the source file (used later by the repair stage).
 
 ## Link types
 
@@ -57,7 +57,7 @@ go run ./cmd/broken-links-parser/ extract \
 
 When a repository assembles documentation from multiple GitHub repos using [docforge](https://github.com/gardener/docforge) manifests, use `--docforge-manifest` to include those remote-sourced files in the scan.
 
-The tool reads the manifest directly — no docforge build step required. For each remote-sourced file, it looks for a local clone under `--repos-dir` and extracts links from that clone. Relative links in sourced files are validated against their origin repo's filesystem. Sourced files without an available local clone are skipped (a notice is printed to stderr).
+The tool reads the manifest directly — no docforge build step required. For each remote-sourced file, it looks for a local clone under `--repos-dir` and extracts links from it. Relative links in sourced files are validated against their origin repo's filesystem.
 
 Use `--docforge-strict` to additionally flag links that are valid in the origin repo but whose target is not included in the manifest — these will break after assembly.
 
@@ -68,6 +68,6 @@ Use `--docforge-strict` to additionally flag links that are valid in the origin 
 | `--root` | `.` | Repository root to scan |
 | `--dirs` | all | Comma-separated subdirectories to restrict the scan |
 | `--verbose` | `false` | Print each link to stdout |
-| `--html` | — | Write an HTML report to this path (no report is written when unset) |
+| `--html` | — | Write an HTML report to this path |
 | `--docforge-manifest` | — | Path to root docforge manifest YAML; includes remote-sourced files from local clones |
 | `--docforge-strict` | `false` | Flag valid links whose target is not in the manifest (requires `--docforge-manifest`) |

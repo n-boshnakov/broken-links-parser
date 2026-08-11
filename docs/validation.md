@@ -9,15 +9,13 @@ The validator is the second pipeline stage. It takes the links found by the extr
 | `relative` / `anchor` (local path) | File existence via `os.Stat`; heading anchor presence for `#fragment` links |
 | `image` (local path) | File existence via `os.Stat` |
 | `image` (absolute URL) | HTTP HEAD request — badge SVGs and remote images are checked via HTTP |
-| `absolute` | HTTP HEAD request, falling back to GET on `405 Method Not Allowed` (or when the server rejects HEAD) |
+| `absolute` | HTTP HEAD request, falling back to GET on 405 |
 | `/`-prefixed paths | Resolved from the repo root (or origin repo root for docforge-sourced files) |
 | `mailto:` / `tel:` / other non-HTTP schemes | Skipped — marked as Ignored |
 
-Absolute links (including HTTP(S) image URLs) are checked concurrently (default 5 workers); relative and anchor links are checked synchronously. Progress is printed to stdout roughly every 50 links, with a running ETA.
+Absolute links are checked concurrently (default 5 workers). Relative links are checked synchronously. Progress is printed to stdout with a per-link ETA during validation.
 
-A response with status 200–399 is treated as valid (redirects are followed by the HTTP client, and a 3xx that isn't followed is still counted as reachable); 400 and above is a broken `HTTP_ERROR`. Transient failures (`429`, `502`, `503`, `504`) are retried up to twice with exponential backoff and jitter before being reported.
-
-HTTP requests include a browser-like `User-Agent` header to reduce false positives from basic bot protection. Requests to GitHub hosts are authenticated when a matching token is configured — see [Authenticating GitHub requests](#authenticating-github-requests).
+HTTP requests include a browser-like `User-Agent` header to reduce false positives from basic bot protection. GitHub URLs use an authenticated request when `GITHUB_TOKEN` is set.
 
 ## Anchor validation
 
@@ -27,7 +25,7 @@ For links with a `#fragment`, the validator extracts all headings from the targe
 - Backtick code spans unwrapped: `` `code` `` → `code`
 - Orphaned `](url)` suffixes stripped (e.g. from headings that are themselves links)
 - Lowercase, spaces → hyphens, non-alphanumeric characters removed
-- Removing a special character can leave a double hyphen behind, and it is kept (e.g. `Shoot & Seed` → `shoot--seed`, because the `&` is dropped and both surrounding spaces become hyphens)
+- Double hyphens preserved (e.g. `Shoot & Seed` → `shoot--seed`)
 - Duplicate headings generate numbered variants: `foo`, `foo-1`, `foo-2`
 - GitHub line-range anchors (`#L48-L55`) always treated as valid
 
@@ -39,39 +37,17 @@ When `ANCHOR_NOT_FOUND`, the report shows the closest matching anchor as a click
 |------|---------|
 | `FILE_NOT_FOUND` | Resolved local path does not exist |
 | `ANCHOR_NOT_FOUND` | Target file exists but contains no heading matching the fragment; closest match shown |
-| `HTTP_ERROR` | HTTP response was 4xx or 5xx, or the request failed at the transport level (status code shown in the report when available) |
+| `HTTP_ERROR` | HTTP response was 4xx or 5xx (status code shown in report) |
 | `TIMEOUT` | HTTP request exceeded the configured timeout |
-| `IGNORED` | URL matched an ignore pattern (`.linkignore`, `--ignore-pattern`, `--ignore-file`, or `--scoped-ignore-file`) or uses a non-HTTP scheme — not validated |
+| `IGNORED` | URL matched an `--ignore-pattern` or is a non-HTTP scheme — not validated |
 
 ### On false positives from bulk runs
 
-When scanning thousands of links, some servers (kubernetes.io, goreportcard.com, certain GitHub endpoints) rate-limit automated requests, returning timeouts or 4xx responses even for pages that load fine in a browser. Reduce false positives with:
+When scanning thousands of links, some servers (kubernetes.io, goreportcard.com, certain GitHub endpoints) rate-limit automated requests, returning timeouts or 4xx responses that work fine in a browser. Reduce false positives with:
 
 ```sh
 --concurrency 2 --timeout 30s
 ```
-
-## Authenticating GitHub requests
-
-Unauthenticated GitHub requests are rate-limited aggressively, which shows up as false-positive broken links on large runs. Configure a token per host so requests are authenticated:
-
-- **github.com** — set `GITHUB_TOKEN`.
-- **GitHub Enterprise hosts** — set an env var per host using the convention `GITHUB_<HOST>_TOKEN`, where the hostname is uppercased and dots/hyphens become underscores. These are auto-discovered; no flag is needed.
-
-```sh
-# .env
-GITHUB_TOKEN=ghp_...                  # → github.com
-GITHUB_TOOLS_SAP_TOKEN=ghp_...        # → github.tools.sap
-GITHUB_WDF_SAP_CORP_TOKEN=ghp_...     # → github.wdf.sap.corp
-```
-
-When the convention is ambiguous (a host with both hyphens and dots maps to the same env var name as another), map hosts to env var names explicitly with `--github-tokens`:
-
-```sh
---github-tokens github.tools.sap=GITHUB_TOOLS_SAP_TOKEN,github.wdf.sap.corp=GITHUB_WDF_SAP_CORP_TOKEN
-```
-
-If a GitHub Enterprise host is encountered without a matching token, the tool warns once and continues with unauthenticated requests.
 
 ## Usage
 
@@ -134,7 +110,7 @@ mailto:*
 - **Repo-specific patterns** apply only to links sourced from that repo's local clone
 - Paths must be absolute — relative paths would break if the file moves
 
-Pass it with `--scoped-ignore-file <path>`. Note that this is a different, sectioned format from the flat root `.linkignore` that is auto-loaded — although the file may be named `.linkignore` too. When working with Gardener docs, keeping this sectioned file in the tool's own repo is the recommended setup.
+Pass it with `--scoped-ignore-file .linkignore` (the `.linkignore` in this repo is the recommended location when working with Gardener docs).
 
 ## Validation result cache
 
@@ -157,7 +133,6 @@ Use `--cache-ttl 1h` for a shorter TTL if you want fresher results. Use `--no-va
 | `--scoped-ignore-file` | — | Path to a sectioned ignore file with per-repo patterns (see above) |
 | `--concurrency` | `5` | Max concurrent HTTP requests |
 | `--timeout` | `15s` | Per-link HTTP request timeout |
-| `--github-tokens` | — | Explicit per-host token env var mapping, e.g. `github.tools.sap=GITHUB_TOOLS_SAP_TOKEN` (comma-separated); overrides the auto-discovered convention |
 | `--cache-file` | `~/.cache/broken-links-parser/validation.json` | Path to validation result cache |
 | `--cache-ttl` | `24h` | How long cached results remain valid |
 | `--no-validation-cache` | `false` | Disable validation caching for a fresh run |

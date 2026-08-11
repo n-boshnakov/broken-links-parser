@@ -416,8 +416,7 @@ func isCommitSHA(s string) bool {
 }
 
 // rebuildGitHubURL replaces the file path portion of a GitHub blob URL with newPath,
-// preserving the original scheme, host (so GitHub Enterprise hosts survive), and
-// fragment (anchor) if present.
+// preserving the original fragment (anchor) if present.
 func rebuildGitHubURL(original, newPath string) string {
 	u, err := url.Parse(original)
 	if err != nil {
@@ -427,11 +426,7 @@ func rebuildGitHubURL(original, newPath string) string {
 	if !ok {
 		return original
 	}
-	scheme := u.Scheme
-	if scheme == "" {
-		scheme = "https"
-	}
-	rebuilt := fmt.Sprintf("%s://%s/%s/%s/blob/%s/%s", scheme, u.Host, owner, repo, branch, newPath)
+	rebuilt := fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", owner, repo, branch, newPath)
 	if u.Fragment != "" {
 		rebuilt += "#" + u.Fragment
 	}

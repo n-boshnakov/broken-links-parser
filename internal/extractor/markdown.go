@@ -39,7 +39,7 @@ func ExtractMarkdown(path string) ([]types.Link, error) {
 		return nil, err
 	}
 
-	// Blank out code regions so link regexes don't match links inside them.
+	// ponytail: blank code regions so regexes don't match links inside them.
 	masked := maskCodeRegions(data)
 
 	var links []types.Link
