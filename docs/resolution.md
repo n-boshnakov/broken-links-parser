@@ -6,11 +6,13 @@ The resolver is the third pipeline stage. It takes broken links from the validat
 
 | Strategy | When used | Confidence |
 |----------|-----------|------------|
-| `git-history` | Broken relative link; local repo scanned for renames/deletions | High |
+| `git-history` | Broken relative, anchor, or image link; local repo scanned for renames/deletions | High |
 | `local-clone` | Broken absolute GitHub link; target repo found under `--repos-dir` | High |
 | `github-api` | Broken absolute GitHub link; no local clone available | High |
 | `wayback+ai` | External non-GitHub link; `--ai` and `--wayback` set; Wayback snapshot used to enrich the AI prompt | Low |
 | `ai` | External non-GitHub link; `--ai` set; all other strategies failed | Low |
+
+GitHub Enterprise links (any host with a configured token — see [validation.md](validation.md#authenticating-github-requests)) are treated like `github.com` links and go through the `local-clone` and `github-api` strategies. The reason strings in the table below are the human-readable labels shown in the report.
 
 For GitHub links, the resolver checks rename history before concluding a file was deleted — a case-only rename (e.g. `FAQ.md` → `faq.md`) is correctly resolved as a rename, not a deletion.
 
@@ -45,25 +47,25 @@ When a clone is found or auto-cloned, `git fetch --quiet origin` runs before sca
 
 ### Auto-cloning (`--cache-dir`)
 
-The tool automatically clones any GitHub repo it needs for resolution into a persistent cache directory (default `~/.cache/broken-links-parser/clones`). Clones use `--filter=blob:none --no-single-branch` — full commit history is downloaded (needed for rename/deletion detection) but file content is deferred.
+The tool automatically clones any GitHub repo it needs for resolution into a persistent cache directory (default `~/.cache/broken-links-parser/clones`). Clones use `--filter=blob:none --no-single-branch` — the full commit history is downloaded (needed for rename/deletion detection) while file contents (blobs) are fetched on demand.
 
 **First run:** expect 10–30 s per new repo being cloned. For a docforge manifest referencing 20 repos, the first run may add several minutes. Subsequent runs are fast — only `git fetch` is needed.
 
 **Disk space:** blobless clones of large repos are tens of MB each. 20 Gardener repos ≈ 500 MB–1 GB total in the cache.
 
-Use `--no-cache` to disable auto-cloning and fall back to the GitHub API (current pre-cache behaviour).
+Use `--no-cache` to disable auto-cloning and fall back to the GitHub API.
 
 ## AI resolution (`--ai`)
 
-When `--ai` is set, the resolver uses an AI model as a last resort for external non-HTTP links that programmatic strategies couldn't resolve.
+When `--ai` is set, the resolver uses an AI model as a last resort for external non-GitHub links that programmatic strategies couldn't resolve.
 
 - Asks for up to 3 candidate URLs with confidence scores (0.0–1.0)
 - Sorts candidates by confidence and HTTP-validates each in order
-- Returns the first candidate that responds with HTTP 2xx
+- Returns the first candidate that responds with a 2xx or 3xx status
 - Rejects Wayback Machine URLs and other archive links as candidates
 - 403/429 responses (bot-blocked sites) skip AI entirely — the page likely works in a browser
 
-Requires `AI_API_KEY` in `.env`. Supports both Anthropic's API and any OpenAI-compatible proxy (LiteLLM, Azure OpenAI, etc.) via `AI_BASE_URL`.
+Requires `AI_API_KEY` in the environment or `.env`. Supports both Anthropic's API and any OpenAI-compatible proxy (LiteLLM, Azure OpenAI, etc.) via `AI_BASE_URL`.
 
 ## Wayback Machine enrichment (`--wayback`)
 
@@ -91,6 +93,7 @@ When no fix can be found, the report shows an italicised reason in the Fixed Lin
 | `API blocked (token policy)` | GitHub API returned 403 — fine-grained PAT lifetime exceeds org policy (SAP: ≤366 days) | Switch to a classic PAT with `public_repo` scope |
 | `API rate limited` | GitHub API rate limit exhausted after retries | Rotate `GITHUB_TOKEN`; re-run with lower `--concurrency` |
 | `Repo not found or private` | GitHub API returned 404 — repo deleted, renamed, or made private | Check manually |
+| `No local clone and API unavailable` | No local clone was found and the GitHub API could not be reached | Provide `--repos-dir`/`--cache-dir`, or check connectivity |
 | `Ambiguous (multiple matches)` | Multiple files share the same name; commit history couldn't identify the exact rename | Check the repo manually |
 | `External link (enable --ai)` | Non-GitHub URL and `--ai` not set | Re-run with `--ai`, or fix manually |
 | `Bot-blocked (403/429) — likely works in browser` | Server blocks automated requests; page probably exists | Verify in a browser |
@@ -132,6 +135,6 @@ Fine-grained PATs are subject to organisation-level policies — SAP's enterpris
 | `--cache-dir` | `~/.cache/broken-links-parser/clones` | Directory for auto-cloned repos |
 | `--no-cache` | `false` | Disable auto-cloning; fall back to GitHub API |
 | `--no-fetch` | `false` | Skip `git fetch` on local and cached clones |
+| `--github-tokens` | — | Explicit per-host token env var mapping (see [validation.md](validation.md#authenticating-github-requests)); enables GitHub Enterprise resolution |
 | `--ai` | `false` | Enable AI-assisted resolution for external links |
 | `--wayback` | `false` | Enrich AI prompts with Wayback Machine context; use archive as fallback (requires `--ai`) |
-| `--apply-ai` | `false` | Allow AI suggestions to be applied by the repair stage (reserved for repair stage) |

@@ -24,7 +24,10 @@ type reportRow struct {
 var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"isAbsolute": func(r reportRow) bool { return r.Type == types.LinkTypeAbsolute },
 	"isGitHubURL": func(s string) bool {
-		return strings.HasPrefix(s, "https://github.com/")
+		// The source-file column holds either a full remote URL (github.com or a
+		// GitHub Enterprise host) or a relative path; treat any http(s) value as a
+		// clickable link.
+		return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
 	},
 	"statusClass": func(r reportRow) string {
 		if r.Result == nil {
@@ -126,6 +129,8 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			return "API rate limited"
 		case types.UnresolvedRepoNotFound:
 			return "Repo not found or private"
+		case types.UnresolvedNoCloneNoAPI:
+			return "No local clone and API unavailable"
 		case types.UnresolvedAmbiguous:
 			return "Ambiguous (multiple matches)"
 		case types.UnresolvedExternalNoAI:
