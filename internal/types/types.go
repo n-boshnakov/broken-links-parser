@@ -21,9 +21,23 @@ const (
 
 // Confidence constants for ResolutionResult.
 const (
-	ConfidenceHigh = "high"
-	ConfidenceLow  = "low"
+	ConfidenceHigh   = "high"
+	ConfidenceMedium = "medium"
+	ConfidenceLow    = "low"
 )
+
+// ConfidenceLabel maps a numeric confidence score (0.0–1.0) to a label.
+// It is the single source of truth for the score → label mapping.
+func ConfidenceLabel(score float64) string {
+	switch {
+	case score >= 0.8:
+		return ConfidenceHigh
+	case score >= 0.5:
+		return ConfidenceMedium
+	default:
+		return ConfidenceLow
+	}
+}
 
 // UnresolvedReason constants explain why no fix was found for a broken link.
 const (
@@ -42,15 +56,28 @@ const (
 	UnresolvedSourceMalformed   = "SOURCE_MALFORMED"        // the original broken URL is itself malformed
 )
 
+// Candidate is one considered replacement URL for a broken link, retained so the
+// report can show alternatives and the reasoning behind each, not just the winner.
+type Candidate struct {
+	URL             string
+	Strategy        string  // one of the Strategy* constants
+	Reasoning       string  // why this candidate was suggested (from the AI)
+	ConfidenceScore float64 // 0.0–1.0
+	Reachable       bool    // true when the URL passed an HTTP reachability check
+}
+
 // ResolutionResult is the outcome of attempting to find a replacement for a broken link.
 type ResolutionResult struct {
 	ValidationResult
-	FixedURL           string // empty if unresolved
-	Strategy           string // one of the Strategy* constants
-	Confidence         string // ConfidenceHigh or ConfidenceLow
-	Deleted            bool   // true when FixedURL points to a deletion commit rather than a replacement
-	UnresolvedReason   string // one of the Unresolved* constants, set when FixedURL is empty
-	IsWaybackFallback  bool   // true when FixedURL is a Wayback archive URL used as last-resort
+	FixedURL          string      // empty if unresolved
+	Strategy          string      // one of the Strategy* constants
+	Confidence        string      // derived label; use ConfidenceLabel(ConfidenceScore)
+	ConfidenceScore   float64     // 0.0–1.0 numeric confidence; source of truth for Confidence
+	Reasoning         string      // human-readable explanation for the chosen fix (from the AI)
+	Candidates        []Candidate // all candidates considered, best first; may be empty
+	Deleted           bool        // true when FixedURL points to a deletion commit rather than a replacement
+	UnresolvedReason  string      // one of the Unresolved* constants, set when FixedURL is empty
+	IsWaybackFallback bool        // true when FixedURL is a Wayback archive URL used as last-resort
 }
 
 // Reason codes for ValidationResult.
@@ -59,17 +86,34 @@ const (
 	ReasonAnchorNotFound = "ANCHOR_NOT_FOUND"
 	ReasonHTTPError     = "HTTP_ERROR"
 	ReasonTimeout       = "TIMEOUT"
+	ReasonAuthBlocked   = "AUTH_BLOCKED"   // 401/403 — page likely exists but rejects automated access
+	ReasonNetworkError  = "NETWORK_ERROR"  // DNS failure, connection refused, TLS/certificate error
 	ReasonIgnored       = "IGNORED"
 )
 
 // ValidationResult is the outcome of validating a single Link.
 type ValidationResult struct {
-	Link             Link
-	Valid            bool
-	Reason           string // one of the Reason* constants, empty when Valid
-	StatusCode       int    // HTTP status code, 0 for non-HTTP checks
-	NotAssembled     bool   // true when link is valid on disk but target not in docforge manifest (--docforge-strict only)
-	SuggestedAnchor  string // closest matching anchor when Reason is ANCHOR_NOT_FOUND; empty otherwise
+	Link                 Link
+	Valid                bool
+	Reason               string  // one of the Reason* constants, empty when Valid
+	StatusCode           int     // HTTP status code, 0 for non-HTTP checks
+	NotAssembled         bool    // true when link is valid on disk but target not in docforge manifest (--docforge-strict only)
+	SuggestedAnchor      string  // closest matching anchor when Reason is ANCHOR_NOT_FOUND; empty otherwise
+	SuggestedAnchorScore float64 // 0.0–1.0 confidence of the suggested anchor; 0 when none
+}
+
+// IsBroken reports whether a result should count as a broken link. Valid links,
+// ignored links, and non-broken warning states (auth-restricted, network error)
+// are excluded — those are surfaced separately rather than counted as breakage.
+func (r ValidationResult) IsBroken() bool {
+	if r.Valid {
+		return false
+	}
+	switch r.Reason {
+	case ReasonIgnored, ReasonAuthBlocked, ReasonNetworkError:
+		return false
+	}
+	return true
 }
 
 // Link is a single link occurrence extracted from a source file.

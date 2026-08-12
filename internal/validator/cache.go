@@ -95,3 +95,28 @@ func (c ValidationCache) Set(url string, result types.ValidationResult) {
 	}
 	c[url] = CacheEntry{Result: stripped, CheckedAt: time.Now()}
 }
+
+// cacheable reports whether a validation result is stable enough to persist.
+// Transient outcomes (timeouts, network errors, auth/bot blocks, and retryable
+// HTTP statuses such as 429/5xx) are provisional — caching them would let a
+// momentary blip masquerade as a broken link for the full TTL, so they are
+// re-checked on every run instead.
+func cacheable(r types.ValidationResult) bool {
+	if r.Valid {
+		return true
+	}
+	switch r.Reason {
+	case types.ReasonTimeout, types.ReasonNetworkError, types.ReasonAuthBlocked:
+		return false
+	case types.ReasonHTTPError:
+		// A settled 4xx (e.g. 404/410) is stable; a transient status or an
+		// unknown status (0, from a transport error) is not.
+		if r.StatusCode == 0 || retryableStatus(r.StatusCode) {
+			return false
+		}
+		return true
+	}
+	// Anything else (e.g. FILE_NOT_FOUND, ANCHOR_NOT_FOUND) is not an absolute-URL
+	// result and never reaches the cache path anyway; be conservative and skip it.
+	return false
+}

@@ -17,6 +17,15 @@ Reference-style Markdown links (`[text][ref]` + `[ref]: url`) are resolved and e
 
 Links inside fenced code blocks and inline code spans are ignored.
 
+## Excluded directories
+
+Dependency, build-output, cache, and VCS directories are never scanned, since they
+contain generated or third-party files rather than authored docs. The walker skips any
+directory named `node_modules`, `vendor`, `dist`, `build`, or `public`, plus any
+dot-directory (e.g. `.git`, `.vitepress`, `.cache`) — except the scan root itself.
+Symlinked directories are not followed. Use `--dirs` to narrow the scan further to
+specific subdirectories.
+
 ## Link text
 
 For every link, the extractor captures the anchor or alt text alongside the URL:

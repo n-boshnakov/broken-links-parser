@@ -35,7 +35,7 @@ func TestAnchorFragmentNormalisation(t *testing.T) {
 			Type:       types.LinkTypeRelative,
 			SourceFile: sourceFile,
 		}
-		result := ValidateRelative(link, nil, "")
+		result := ValidateRelative(link, nil, "", "")
 		if result.Valid != tc.wantValid {
 			t.Errorf("fragment %q: valid=%v, want %v (reason: %s, suggested: %s)",
 				tc.fragment, result.Valid, tc.wantValid, result.Reason, result.SuggestedAnchor)

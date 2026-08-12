@@ -10,8 +10,15 @@ The validator is the second pipeline stage. It takes the links found by the extr
 | `image` (local path) | File existence via `os.Stat` |
 | `image` (absolute URL) | HTTP HEAD request — badge SVGs and remote images are checked via HTTP |
 | `absolute` | HTTP HEAD request, falling back to GET on `405 Method Not Allowed` (or when the server rejects HEAD) |
-| `/`-prefixed paths | Resolved from the repo root (or origin repo root for docforge-sourced files) |
+| `/`-prefixed paths | Resolved against `--root-relative-base` if set, else the repo root (or origin repo root for docforge-sourced files) — see [Root-relative links](#root-relative-links) |
 | `mailto:` / `tel:` / other non-HTTP schemes | Skipped — marked as Ignored |
+
+Local link targets are resolved with static-site route conventions: a link that
+isn't a file as-written and doesn't already end in `.md`/`.html` is also tried as
+`<target>.md`, `<target>/index.md`, and `<target>/_index.md` (and a directory target
+is satisfied by an `index.md`/`_index.md` inside it). This resolves rendered routes
+such as `/docs/foo/` → `docs/foo.md`. Markdown link titles (`[text](url "Title")`)
+are stripped from the URL before checking.
 
 Absolute links (including HTTP(S) image URLs) are checked concurrently (default 5 workers); relative and anchor links are checked synchronously. Progress is printed to stdout roughly every 50 links, with a running ETA.
 
@@ -32,6 +39,31 @@ For links with a `#fragment`, the validator extracts all headings from the targe
 - GitHub line-range anchors (`#L48-L55`) always treated as valid
 
 When `ANCHOR_NOT_FOUND`, the report shows the closest matching anchor as a clickable suggestion.
+
+## Root-relative links
+
+Documentation sites commonly write links relative to the **published site root** rather
+than the repository layout — e.g. `/docs/foo/`, `/adopter/`, `/images/diagram.svg`.
+On disk those targets live under a content directory (such as `hugo/content`), not at
+the repo root, so resolving them against the repo root reports thousands of spurious
+`FILE_NOT_FOUND`s.
+
+Use `--root-relative-base <dir>` to point `/`-prefixed links at the content root:
+
+```sh
+--root ~/repo --dirs hugo/content \
+--root-relative-base ~/repo/hugo/content
+```
+
+With that set, `/adopter/images/teaser.svg` resolves to
+`~/repo/hugo/content/adopter/images/teaser.svg`. Relative links (`./x.md`, `../y.md`)
+are unaffected — they always resolve against the file that contains them. When the flag
+is omitted, `/`-links fall back to the previous behaviour (repo root, or origin repo
+root for docforge-sourced files).
+
+Resolution is generic across static-site generators (Hugo, Jekyll, VitePress,
+Docusaurus, MkDocs): a route like `/docs/foo/` matches `docs/foo.md`,
+`docs/foo/index.md`, or `docs/foo/_index.md`.
 
 ## Reason codes
 
@@ -155,6 +187,7 @@ Use `--cache-ttl 1h` for a shorter TTL if you want fresher results. Use `--no-va
 | `--ignore-pattern` | — | Skip links matching this glob (repeatable) |
 | `--ignore-file` | — | Path to a file with ignore patterns (one per line, `#` = comment) |
 | `--scoped-ignore-file` | — | Path to a sectioned ignore file with per-repo patterns (see above) |
+| `--root-relative-base` | — | Directory that root-relative (`/...`) links resolve against; defaults to the repo root (see [Root-relative links](#root-relative-links)) |
 | `--concurrency` | `5` | Max concurrent HTTP requests |
 | `--timeout` | `15s` | Per-link HTTP request timeout |
 | `--github-tokens` | — | Explicit per-host token env var mapping, e.g. `github.tools.sap=GITHUB_TOOLS_SAP_TOKEN` (comma-separated); overrides the auto-discovered convention |

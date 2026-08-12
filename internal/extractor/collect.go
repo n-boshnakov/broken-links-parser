@@ -8,9 +8,20 @@ import (
 
 var eligibleExts = map[string]bool{".md": true, ".html": true}
 
+// skipDirs are directory names never scanned for documentation: dependency,
+// build-output, cache, and VCS directories. Any dot-directory is also skipped
+// (except the scan root itself).
+var skipDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	"dist":         true,
+	"build":        true,
+	"public":       true,
+}
+
 // Collect returns the paths of all .md and .html files under root.
 // If dirs is non-empty, only files under those subdirectories (relative to root) are returned.
-// Symlinks are never followed.
+// Symlinks are never followed, and dependency/build/cache/VCS directories are skipped.
 func Collect(root string, dirs []string) ([]string, error) {
 	var paths []string
 
@@ -26,6 +37,14 @@ func Collect(root string, dirs []string) ([]string, error) {
 			return nil
 		}
 		if d.IsDir() {
+			// Never skip the scan root itself, even if named like a skip dir or hidden.
+			if path == root {
+				return nil
+			}
+			name := d.Name()
+			if skipDirs[name] || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !eligibleExts[strings.ToLower(filepath.Ext(path))] {

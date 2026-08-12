@@ -50,8 +50,16 @@ func retryableStatus(status int) bool {
 	return status == 429 || status == 503 || status == 502 || status == 504
 }
 
-// ValidateAbsolute checks an absolute URL via HTTP HEAD, falling back to GET on 405.
-// Retries up to 2 times with exponential backoff on 429/5xx transient errors.
+// ValidateAbsolute checks an absolute URL via HTTP HEAD, falling back to GET when
+// the server rejects HEAD (405/501/403). Retries up to 2 times with exponential
+// backoff on 429/5xx transient errors.
+//
+// Classification:
+//   - 200–399           → valid
+//   - 401/403           → AUTH_BLOCKED (page likely exists but rejects automated access)
+//   - other 4xx/5xx     → HTTP_ERROR
+//   - timeout           → TIMEOUT
+//   - DNS/refused/TLS   → NETWORK_ERROR
 func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, tokens map[string]string) types.ValidationResult {
 	if MatchesAnyPattern(link.URL, patterns) {
 		return types.ValidationResult{Link: link, Valid: true, Reason: types.ReasonIgnored}
@@ -74,6 +82,9 @@ func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, t
 			if isTimeout(err) {
 				return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonTimeout}
 			}
+			if isNetworkError(err) {
+				return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonNetworkError}
+			}
 			return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonHTTPError}
 		}
 		if !retryableStatus(status) {
@@ -83,6 +94,11 @@ func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, t
 
 	if status >= 200 && status < 400 {
 		return types.ValidationResult{Link: link, Valid: true, StatusCode: status}
+	}
+	// 401/403 almost always mean the page exists but blocks automated/unauthenticated
+	// access; surface as a distinct, non-broken state rather than HTTP_ERROR.
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonAuthBlocked, StatusCode: status}
 	}
 	return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonHTTPError, StatusCode: status}
 }
@@ -108,7 +124,11 @@ func headWithFallback(client *http.Client, url string, tokens map[string]string)
 		return 0, err
 	}
 	resp.Body.Close()
-	if resp.StatusCode == http.StatusMethodNotAllowed {
+	// Some servers reject HEAD (405/501) or gate it behind auth handling that a GET
+	// clears (403); retry those with GET before trusting the status.
+	if resp.StatusCode == http.StatusMethodNotAllowed ||
+		resp.StatusCode == http.StatusNotImplemented ||
+		resp.StatusCode == http.StatusForbidden {
 		resp2, err := doRequest(client, http.MethodGet, url, tokens)
 		if err != nil {
 			return 0, err
@@ -134,5 +154,27 @@ func doRequest(client *http.Client, method, rawURL string, tokens map[string]str
 func isTimeout(err error) bool {
 	return strings.Contains(err.Error(), "context deadline exceeded") ||
 		strings.Contains(err.Error(), "timeout")
+}
+
+// isNetworkError reports whether err is a transport-level failure (DNS resolution,
+// connection refused, or TLS/certificate) rather than an HTTP-status outcome.
+func isNetworkError(err error) bool {
+	msg := err.Error()
+	for _, s := range []string{
+		"no such host",
+		"server misbehaving",
+		"connection refused",
+		"connection reset",
+		"network is unreachable",
+		"no route to host",
+		"tls:",
+		"x509",
+		"certificate",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 

@@ -23,6 +23,56 @@ func candidatesResponse(candidates []map[string]interface{}) map[string]interfac
 }
 
 func TestResolveViaAI(t *testing.T) {
+	t.Run("captures reasoning, numeric confidence, and all candidates", func(t *testing.T) {
+		okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(200)
+		}))
+		defer okSrv.Close()
+		deadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(404)
+		}))
+		defer deadSrv.Close()
+
+		aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// Unsorted on purpose: the 0.92 candidate is reachable and should win.
+			_ = json.NewEncoder(w).Encode(candidatesResponse([]map[string]interface{}{
+				{"url": deadSrv.URL, "confidence_score": 0.6, "reasoning": "dead one"},
+				{"url": okSrv.URL, "confidence_score": 0.92, "reasoning": "the moved page"},
+			}))
+		}))
+		defer aiSrv.Close()
+
+		result := types.ValidationResult{
+			Link:  types.Link{URL: "https://old.example.com/page", Type: types.LinkTypeAbsolute},
+			Valid: false,
+		}
+		res := resolveViaAnthropic(result, AIConfig{APIKey: "k", Model: defaultModel, BaseURL: aiSrv.URL}, WaybackContext{})
+
+		if res.FixedURL != okSrv.URL {
+			t.Fatalf("FixedURL = %q, want %q", res.FixedURL, okSrv.URL)
+		}
+		if res.Reasoning != "the moved page" {
+			t.Errorf("Reasoning = %q, want %q", res.Reasoning, "the moved page")
+		}
+		if res.ConfidenceScore != 0.92 {
+			t.Errorf("ConfidenceScore = %v, want 0.92", res.ConfidenceScore)
+		}
+		if res.Confidence != types.ConfidenceHigh {
+			t.Errorf("Confidence = %q, want high", res.Confidence)
+		}
+		// Both candidates should be retained, sorted best-first.
+		if len(res.Candidates) != 2 {
+			t.Fatalf("len(Candidates) = %d, want 2", len(res.Candidates))
+		}
+		if res.Candidates[0].ConfidenceScore < res.Candidates[1].ConfidenceScore {
+			t.Error("candidates not sorted by confidence descending")
+		}
+		if !res.Candidates[0].Reachable || res.Candidates[1].Reachable {
+			t.Errorf("reachability flags wrong: %+v", res.Candidates)
+		}
+	})
+
 	t.Run("returns highest-confidence valid candidate", func(t *testing.T) {
 		// Serve two candidates: high confidence returns 404, low confidence returns 200.
 		// The resolver should try high first, fail, then accept low.

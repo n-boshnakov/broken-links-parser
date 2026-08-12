@@ -27,6 +27,7 @@ type ValidateOptions struct {
 	GitHubToken      string            // deprecated: use GitHubTokens
 	GitHubTokens     map[string]string // host → token; takes precedence over GitHubToken
 	RepoRoot         string
+	RootRelativeBase string // base dir for /-prefixed links; empty = repo root / SourceRepo
 	DocforgeStrict   bool
 	SourceMap        SourceMapper
 	OnProgress       func(n, total int)
@@ -39,8 +40,14 @@ type ValidateOptions struct {
 
 // Validate classifies each link as valid or broken.
 // Relative and anchor links are checked synchronously.
-// Absolute links are checked concurrently up to opts.Concurrency workers.
-// Returns (results, cacheHits) where cacheHits is the number of absolute links served from cache.
+// Absolute links are validated once per unique URL, concurrently up to
+// opts.Concurrency workers, and the result is fanned out to every link that
+// shares that URL. Returns (results, cacheHits) where cacheHits is the number
+// of absolute links (not unique URLs) served from the on-disk cache.
+//
+// Progress reported via opts.OnProgress tracks the real network work: n and
+// total count unique absolute URLs, since relative/anchor checks and duplicate
+// URLs are effectively instant.
 func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResult, int) {
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 5
@@ -70,16 +77,6 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 	}
 
 	results := make([]types.ValidationResult, len(links))
-	total := len(links)
-	var done int64
-
-	notify := func() {
-		if opts.OnProgress != nil {
-			opts.OnProgress(int(atomic.AddInt64(&done, 1)), total)
-		} else {
-			atomic.AddInt64(&done, 1)
-		}
-	}
 
 	type indexedLink struct {
 		idx  int
@@ -100,43 +97,82 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 			if strings.HasPrefix(l.URL, "http://") || strings.HasPrefix(l.URL, "https://") {
 				absolutes = append(absolutes, indexedLink{i, l})
 			} else {
-				r := ValidateRelative(l, linkPatterns, opts.RepoRoot)
+				r := ValidateRelative(l, linkPatterns, opts.RepoRoot, opts.RootRelativeBase)
 				if r.Valid && opts.DocforgeStrict && opts.SourceMap != nil && l.SourceRepo != "" {
-					r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot))
+					r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot, opts.RootRelativeBase))
 				}
 				results[i] = r
-				notify()
 			}
 		default:
-			r := ValidateRelative(l, linkPatterns, opts.RepoRoot)
+			r := ValidateRelative(l, linkPatterns, opts.RepoRoot, opts.RootRelativeBase)
 			if r.Valid && opts.DocforgeStrict && opts.SourceMap != nil && l.SourceRepo != "" {
-				r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot))
+				r.NotAssembled = !opts.SourceMap.ContainsLocalPath(resolvedPath(l, opts.RepoRoot, opts.RootRelativeBase))
 			}
 			results[i] = r
-			notify()
+		}
+	}
+
+	// Group absolute links by URL so each unique URL is validated only once per
+	// run. In large docs corpora the same external URLs (badges, k8s.io, etc.)
+	// recur thousands of times; validating per unique URL turns hundreds of
+	// thousands of potential HTTP calls into a few thousand.
+	urlToIndices := make(map[string][]int)
+	var uniqueURLs []string
+	for _, il := range absolutes {
+		if _, seen := urlToIndices[il.link.URL]; !seen {
+			uniqueURLs = append(uniqueURLs, il.link.URL)
+		}
+		urlToIndices[il.link.URL] = append(urlToIndices[il.link.URL], il.idx)
+	}
+	// A representative link per URL (for ignore-pattern context and metadata).
+	repLink := make(map[string]types.Link, len(uniqueURLs))
+	for _, il := range absolutes {
+		if _, ok := repLink[il.link.URL]; !ok {
+			repLink[il.link.URL] = il.link
+		}
+	}
+
+	total := len(uniqueURLs)
+	var done int64
+	notify := func() {
+		n := atomic.AddInt64(&done, 1)
+		if opts.OnProgress != nil {
+			opts.OnProgress(int(n), total)
+		}
+	}
+
+	// apply writes a URL's result to every link index that shares it, restoring
+	// each link's own metadata.
+	apply := func(url string, r types.ValidationResult) {
+		for _, idx := range urlToIndices[url] {
+			rr := r
+			rr.Link = links[idx]
+			results[idx] = rr
 		}
 	}
 
 	sem := make(chan struct{}, opts.Concurrency)
 	var wg sync.WaitGroup
 	var cacheMu sync.Mutex // guards all cache reads and writes
-	for _, il := range absolutes {
-		il := il
+	for _, u := range uniqueURLs {
+		u := u
+		link := repLink[u]
 		linkPatterns := opts.IgnorePatterns
 		if opts.ScopedIgnore != nil {
-			linkPatterns = opts.ScopedIgnore.PatternsFor(il.link.SourceFile)
+			linkPatterns = opts.ScopedIgnore.PatternsFor(link.SourceFile)
 			linkPatterns = append(linkPatterns, opts.IgnorePatterns...)
 		}
 
 		// Cache check — must hold lock because goroutines write concurrently.
 		if useCache {
 			cacheMu.Lock()
-			cached, ok := cache.Get(il.link.URL, TTLFor(il.link.URL, opts.CacheTTL, opts.DomainTTLs))
+			cached, ok := cache.Get(u, TTLFor(u, opts.CacheTTL, opts.DomainTTLs))
 			cacheMu.Unlock()
 			if ok {
-				cached.Link = il.link
-				results[il.idx] = cached
-				atomic.AddInt64(&cacheHits, 1)
+				apply(u, cached)
+				// Count every link sharing this URL as a cache hit, matching the
+				// prior per-link accounting.
+				atomic.AddInt64(&cacheHits, int64(len(urlToIndices[u])))
 				notify()
 				continue
 			}
@@ -147,11 +183,11 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := ValidateAbsolute(il.link, client, linkPatterns, opts.GitHubTokens)
-			results[il.idx] = r
-			if useCache {
+			r := ValidateAbsolute(link, client, linkPatterns, opts.GitHubTokens)
+			apply(u, r)
+			if useCache && cacheable(r) {
 				cacheMu.Lock()
-				cache.Set(il.link.URL, r)
+				cache.Set(u, r)
 				cacheMu.Unlock()
 			}
 			notify()
@@ -168,7 +204,8 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 }
 
 // resolvedPath computes the absolute path of a relative link target.
-func resolvedPath(l types.Link, repoRoot string) string {
+// rootRelativeBase, when non-empty, is the base for /-prefixed links (mirrors ValidateRelative).
+func resolvedPath(l types.Link, repoRoot, rootRelativeBase string) string {
 	url := l.URL
 	if i := strings.Index(url, "#"); i >= 0 {
 		url = url[:i]
@@ -177,7 +214,10 @@ func resolvedPath(l types.Link, repoRoot string) string {
 		return l.SourceFile
 	}
 	if strings.HasPrefix(url, "/") {
-		base := l.SourceRepo
+		base := rootRelativeBase
+		if base == "" {
+			base = l.SourceRepo
+		}
 		if base == "" {
 			base = repoRoot
 		}

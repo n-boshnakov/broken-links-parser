@@ -91,7 +91,10 @@ func ExtractAnchors(path string) ([]string, error) {
 
 // ValidateRelative checks a relative or anchor-only link against the local filesystem.
 // repoRoot is the root of the scanned repository; used to resolve links starting with /.
-func ValidateRelative(link types.Link, patterns []string, repoRoot string) types.ValidationResult {
+// rootRelativeBase, when non-empty, overrides the base for /-prefixed links so they
+// resolve against a content root (e.g. a docs content directory) rather than the repo
+// root — links in many docs sites are written root-relative to the content tree.
+func ValidateRelative(link types.Link, patterns []string, repoRoot, rootRelativeBase string) types.ValidationResult {
 	if MatchesAnyPattern(link.URL, patterns) {
 		return types.ValidationResult{Link: link, Valid: true, Reason: types.ReasonIgnored}
 	}
@@ -107,9 +110,12 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 	targetPath := link.SourceFile
 	if url != "" {
 		if strings.HasPrefix(url, "/") {
-			// Absolute-path link (repo-root-relative).
-			// Prefer SourceRepo (for docforge-sourced files), then repoRoot.
-			base := link.SourceRepo
+			// Root-relative link. Prefer an explicit content root, then SourceRepo
+			// (for docforge-sourced files), then the repo root.
+			base := rootRelativeBase
+			if base == "" {
+				base = link.SourceRepo
+			}
 			if base == "" {
 				base = repoRoot
 			}
@@ -124,7 +130,23 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 		}
 	}
 
-	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+	// Resolve the target on disk. For anchor-only links (url == "") the target is
+	// the source file itself and must exist as-is. Otherwise, if the exact path is
+	// missing, fall back to static-site route conventions (extensionless routes map
+	// to a .md file or an index.md/_index.md inside a directory of that name).
+	if url == "" {
+		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+			return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonFileNotFound}
+		}
+	} else if resolved, kind := resolveTarget(targetPath); kind == targetFile {
+		targetPath = resolved
+	} else if kind == targetDir {
+		// Link points to a real directory with no index page (e.g. a source-code
+		// folder). On GitHub/GitLab such a link renders the directory listing, so
+		// it is valid. A fragment can't resolve against a bare directory — treat the
+		// directory itself as the target and skip the heading check.
+		return types.ValidationResult{Link: link, Valid: true}
+	} else {
 		return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonFileNotFound}
 	}
 
@@ -156,6 +178,64 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot string) types
 	}
 
 	return types.ValidationResult{Link: link, Valid: true}
+}
+
+// targetKind classifies the outcome of resolving a local link target.
+type targetKind int
+
+const (
+	targetNone targetKind = iota // nothing exists at the target
+	targetFile                   // resolved to a content file (path returned)
+	targetDir                    // an existing directory with no index page
+)
+
+// resolveTarget locates the on-disk target of a local link, applying the route
+// conventions shared by static-site generators (Hugo, Jekyll, VitePress, Docusaurus,
+// MkDocs, …): a rendered route such as "/docs/foo/" maps to "foo.md", or to
+// "index.md"/"_index.md" inside a "foo" directory.
+//
+// Returns (resolvedFilePath, targetFile) when a content file is found,
+// ("", targetDir) when the target is a real directory with no index page (still a
+// valid link on GitHub/GitLab, which renders the directory listing), and
+// ("", targetNone) when nothing exists.
+//
+// Order tried:
+//  1. the path exactly as written (a real file)
+//  2. if it's a directory: <dir>/index.md, <dir>/_index.md, else targetDir
+//  3. otherwise (unless it already names a content file): <path>.md, then
+//     <path>/index.md, <path>/_index.md
+func resolveTarget(target string) (string, targetKind) {
+	if fi, err := os.Stat(target); err == nil {
+		if !fi.IsDir() {
+			return target, targetFile
+		}
+		// Directory: prefer an index file inside it, else accept the directory.
+		for _, idx := range []string{"index.md", "_index.md"} {
+			p := filepath.Join(target, idx)
+			if _, err := os.Stat(p); err == nil {
+				return p, targetFile
+			}
+		}
+		return "", targetDir
+	}
+
+	// Not found as-is. Treat it as a rendered route and try the content-file
+	// conventions — but skip this if it already names a content file (which would
+	// have matched above), since then it's a genuine miss. Note: a dot in the final
+	// segment (e.g. "12.25-gardener-cookies") is NOT a file extension, so we can't
+	// gate on filepath.Ext being empty.
+	if ext := strings.ToLower(filepath.Ext(target)); ext != ".md" && ext != ".html" {
+		for _, cand := range []string{
+			target + ".md",
+			filepath.Join(target, "index.md"),
+			filepath.Join(target, "_index.md"),
+		} {
+			if _, err := os.Stat(cand); err == nil {
+				return cand, targetFile
+			}
+		}
+	}
+	return "", targetNone
 }
 
 // closestAnchor returns the best matching anchor from candidates for the given fragment.
