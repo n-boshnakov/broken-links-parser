@@ -260,6 +260,10 @@ func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types
 		return input.Candidates[i].Confidence > input.Candidates[j].Confidence
 	})
 
+	// Build the full list of considered candidates (best first) so the report can
+	// show alternatives and the model's reasoning, not just the winning URL.
+	var considered []types.Candidate
+	var chosen *types.Candidate
 	for _, c := range input.Candidates {
 		if c.URL == "" {
 			continue
@@ -272,20 +276,39 @@ func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types
 		if strings.Contains(c.URL, "web.archive.org") || strings.Contains(c.URL, "archive.org/web") {
 			continue
 		}
-		if validator.CheckURL(c.URL) {
-			confidence := types.ConfidenceLow
-			if c.Confidence >= 0.7 {
-				confidence = types.ConfidenceHigh
-			}
-			return types.ResolutionResult{
-				ValidationResult: result,
-				FixedURL:         c.URL,
-				Strategy:         types.StrategyAI,
-				Confidence:       confidence,
-			}
+		reachable := validator.CheckURL(c.URL)
+		cand := types.Candidate{
+			URL:             c.URL,
+			Strategy:        types.StrategyAI,
+			Reasoning:       c.Reasoning,
+			ConfidenceScore: c.Confidence,
+			Reachable:       reachable,
+		}
+		considered = append(considered, cand)
+		// Choose the first reachable candidate in confidence order.
+		if reachable && chosen == nil {
+			c := cand // capture
+			chosen = &c
 		}
 	}
-	return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedAINoValidCandidate}
+
+	if chosen == nil {
+		return types.ResolutionResult{
+			ValidationResult: result,
+			UnresolvedReason: types.UnresolvedAINoValidCandidate,
+			Candidates:       considered,
+		}
+	}
+
+	return types.ResolutionResult{
+		ValidationResult: result,
+		FixedURL:         chosen.URL,
+		Strategy:         types.StrategyAI,
+		ConfidenceScore:  chosen.ConfidenceScore,
+		Confidence:       types.ConfidenceLabel(chosen.ConfidenceScore),
+		Reasoning:        chosen.Reasoning,
+		Candidates:       considered,
+	}
 }
 
 func buildPrompt(link types.Link, wctx WaybackContext) string {

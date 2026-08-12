@@ -42,6 +42,9 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Result.Valid {
 			return "valid"
 		}
+		if r.Result.Reason == types.ReasonAuthBlocked || r.Result.Reason == types.ReasonNetworkError {
+			return "warning"
+		}
 		return "broken"
 	},
 	"statusLabel": func(r reportRow) string {
@@ -56,6 +59,12 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		}
 		if r.Result.Valid {
 			return "Valid"
+		}
+		switch r.Result.Reason {
+		case types.ReasonAuthBlocked:
+			return "Access restricted"
+		case types.ReasonNetworkError:
+			return "Network error"
 		}
 		return "Broken"
 	},
@@ -157,10 +166,21 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Resolution == nil || r.Resolution.Strategy == "" {
 			return ""
 		}
+		// Prefer the numeric score; fall back to the stored label.
+		conf := r.Resolution.Confidence
+		if r.Resolution.ConfidenceScore > 0 {
+			conf = types.ConfidenceLabel(r.Resolution.ConfidenceScore)
+		}
 		switch r.Resolution.Strategy {
 		case types.StrategyAI:
-			return "AI (low confidence)"
+			if conf != "" {
+				return "AI (" + conf + " confidence)"
+			}
+			return "AI"
 		case types.StrategyWaybackAI:
+			if conf != "" {
+				return "Wayback + AI (" + conf + " confidence)"
+			}
 			return "Wayback + AI"
 		case "anchor-suggestion":
 			return "Closest match"
@@ -176,6 +196,13 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			return "strategy-ai"
 		}
 		return "strategy-normal"
+	},
+	// reasoning returns the AI's explanation for the chosen fix, shown as hover text.
+	"reasoning": func(r reportRow) string {
+		if r.Resolution == nil {
+			return ""
+		}
+		return r.Resolution.Reasoning
 	},
 }).Parse(`<!DOCTYPE html>
 <html lang="en">
@@ -211,6 +238,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   .image    { background:#fce7f3; color:#9d174d; }
   .valid    { background:#dcfce7; color:#166534; }
   .broken   { background:#fee2e2; color:#991b1b; }
+  .warning  { background:#fef3c7; color:#92400e; }
   .ignored  { background:#f3f4f6; color:#6b7280; }
   .not-assembled { background:#fef3c7; color:#92400e; }
   .strategy-normal { background:#dbeafe; color:#1e40af; }
@@ -272,7 +300,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
       <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
       <td>{{if isGitHubURL .Rel}}<a href="{{.Rel}}" target="_blank" rel="noopener">{{.Rel}}</a>{{else}}{{.Rel}}{{end}}</td>
       {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}</td>{{end}}
-      {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}">{{strategyLabel .}}</span>{{end}}</td>{{end}}
+      {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}"{{if reasoning .}} title="{{reasoning .}}"{{end}}>{{strategyLabel .}}</span>{{end}}</td>{{end}}
     </tr>
   {{end}}
   </tbody>
@@ -385,7 +413,7 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 		if i < len(r.Validations) {
 			v := r.Validations[i]
 			row.Result = &v
-			if !v.Valid && v.Reason != types.ReasonIgnored {
+			if v.IsBroken() {
 				broken++
 			}
 			// When an anchor suggestion exists but no resolution was run,
@@ -429,7 +457,7 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 	for _, row := range rows {
 		key := row.Rel + "\x00" + row.URL
 		if seen[key] {
-			if row.Result != nil && !row.Result.Valid {
+			if row.Result != nil && row.Result.IsBroken() {
 				broken-- // undo the broken count increment for this duplicate
 			}
 			continue

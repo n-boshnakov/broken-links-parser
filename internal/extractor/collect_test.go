@@ -105,3 +105,40 @@ func equalSlices(a, b []string) bool {
 	}
 	return true
 }
+
+func TestCollect_SkipsNonContentDirs(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel string) {
+		p := filepath.Join(root, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		_ = os.WriteFile(p, []byte(""), 0o644)
+	}
+	// Real content.
+	write("content/real.md")
+	write("guide.md")
+	// Junk that must be skipped.
+	write("node_modules/pkg/readme.md")
+	write(".git/HEAD.md")
+	write(".vitepress/cache/x.md")
+	write("vendor/dep/doc.html")
+	write("dist/bundle.html")
+	write("build/out.md")
+	write("public/index.html")
+	write("docs/.hidden/secret.md") // hidden nested dir
+
+	got, err := Collect(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := make([]string, len(got))
+	for i, p := range got {
+		r, _ := filepath.Rel(root, p)
+		rel[i] = r
+	}
+	sort.Strings(rel)
+
+	want := []string{"content/real.md", "guide.md"}
+	if !equalSlices(rel, want) {
+		t.Errorf("got %v, want %v", rel, want)
+	}
+}

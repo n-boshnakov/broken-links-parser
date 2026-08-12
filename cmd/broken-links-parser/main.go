@@ -14,7 +14,6 @@ import (
 	"github.com/n-boshnakov/broken-links-parser/internal/pipeline"
 	"github.com/n-boshnakov/broken-links-parser/internal/reporter"
 	"github.com/n-boshnakov/broken-links-parser/internal/resolver"
-	"github.com/n-boshnakov/broken-links-parser/internal/types"
 )
 
 func main() {
@@ -67,7 +66,13 @@ var extractCmd = &cobra.Command{
 
 			valStart := time.Now()
 			var progressMu sync.Mutex
+			// OnProgress reports network work: n and tot count unique absolute URLs
+			// being checked over HTTP (relative/anchor links and duplicate URLs are
+			// resolved instantly and don't drive the bar), so the ETA is meaningful.
 			opts.OnProgress = func(n, tot int) {
+				if tot == 0 {
+					return
+				}
 				if n%50 != 0 && n != tot {
 					return
 				}
@@ -78,7 +83,10 @@ var extractCmd = &cobra.Command{
 					eta = fmt.Sprintf(", ETA %s", remaining.Round(time.Second))
 				}
 				progressMu.Lock()
-				fmt.Printf("\r  %d/%d validated (%.0f%%)%s   ", n, tot, float64(n)/float64(tot)*100, eta)
+				// \r returns to line start; \033[K clears to end of line so a shorter
+				// final update (no ETA) doesn't leave stray characters from a longer
+				// previous line behind.
+				fmt.Printf("\r\033[K  %d/%d unique URLs checked (%.0f%%)%s", n, tot, float64(n)/float64(tot)*100, eta)
 				progressMu.Unlock()
 			}
 
@@ -90,7 +98,7 @@ var extractCmd = &cobra.Command{
 			result.Validations = validations
 			broken := 0
 			for _, r := range validations {
-				if !r.Valid && r.Reason != types.ReasonIgnored {
+				if r.IsBroken() {
 					broken++
 				}
 			}
@@ -145,6 +153,12 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 	ignorePatterns, _ := cmd.Flags().GetStringArray("ignore-pattern")
 	ignoreFile, _ := cmd.Flags().GetString("ignore-file")
 	scopedIgnoreFile, _ := cmd.Flags().GetString("scoped-ignore-file")
+	rootRelativeBase, _ := cmd.Flags().GetString("root-relative-base")
+	if len(rootRelativeBase) >= 2 && rootRelativeBase[:2] == "~/" {
+		if home, err := os.UserHomeDir(); err == nil {
+			rootRelativeBase = home + rootRelativeBase[1:]
+		}
+	}
 	concurrency, _ := cmd.Flags().GetInt("concurrency")
 	cacheFile, _ := cmd.Flags().GetString("cache-file")
 	cacheTTL, _ := cmd.Flags().GetDuration("cache-ttl")
@@ -185,6 +199,7 @@ func buildOptions(cmd *cobra.Command) pipeline.Options {
 		IgnorePatterns: ignorePatterns,
 		IgnoreFile:       ignoreFile,
 		ScopedIgnoreFile:  scopedIgnoreFile,
+		RootRelativeBase:  rootRelativeBase,
 		Concurrency:       concurrency,
 		CacheFile:         cacheFile,
 		CacheTTL:          cacheTTL,
@@ -214,6 +229,7 @@ func init() {
 	extractCmd.Flags().StringArray("ignore-pattern", nil, "Skip links matching this glob pattern (repeatable)")
 	extractCmd.Flags().String("ignore-file", "", "Path to a simple ignore patterns file (one per line, # for comments)")
 	extractCmd.Flags().String("scoped-ignore-file", "", "Path to a sectioned ignore file with per-repo patterns (see docs/validation.md)")
+	extractCmd.Flags().String("root-relative-base", "", "Directory that root-relative (/...) links resolve against; defaults to the repo root")
 	extractCmd.Flags().Int("concurrency", 5, "Max concurrent HTTP requests during validation")
 	extractCmd.Flags().String("cache-file", "~/.cache/broken-links-parser/validation.json", "Path to validation result cache file")
 	extractCmd.Flags().Duration("cache-ttl", 24*time.Hour, "How long cached validation results remain valid")

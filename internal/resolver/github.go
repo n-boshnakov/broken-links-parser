@@ -103,7 +103,8 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir stri
 			ValidationResult: result,
 			FixedURL:         fixedURL,
 			Strategy:         types.StrategyLocalClone,
-			Confidence:       types.ConfidenceHigh,
+			ConfidenceScore:  0.95,
+			Confidence:       types.ConfidenceLabel(0.95),
 		}
 	}
 
@@ -117,7 +118,8 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir stri
 		ValidationResult: result,
 		FixedURL:         commitURL,
 		Strategy:         types.StrategyLocalClone,
-		Confidence:       types.ConfidenceHigh,
+		ConfidenceScore:  0.9,
+		Confidence:       types.ConfidenceLabel(0.9),
 		Deleted:          true,
 	}
 }
@@ -255,7 +257,8 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 					ValidationResult: result,
 					FixedURL:         fixedURL,
 					Strategy:         types.StrategyGitHubAPI,
-					Confidence:       types.ConfidenceHigh,
+					ConfidenceScore:  0.95,
+					Confidence:       types.ConfidenceLabel(0.95),
 				}
 			}
 			// Commit exists but was a deletion, not a rename.
@@ -264,7 +267,8 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 				ValidationResult: result,
 				FixedURL:         fixedURL,
 				Strategy:         types.StrategyGitHubAPI,
-				Confidence:       types.ConfidenceHigh,
+				ConfidenceScore:  0.9,
+				Confidence:       types.ConfidenceLabel(0.9),
 				Deleted:          true,
 			}
 		}
@@ -278,7 +282,8 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 			ValidationResult: result,
 			FixedURL:         fixedURL,
 			Strategy:         types.StrategyGitHubAPI,
-			Confidence:       types.ConfidenceHigh,
+			ConfidenceScore:  0.95,
+			Confidence:       types.ConfidenceLabel(0.95),
 		}
 	default:
 		// Multiple files share the same basename — use commit history to find the exact rename.
@@ -290,7 +295,8 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 					ValidationResult: result,
 					FixedURL:         fixedURL,
 					Strategy:         types.StrategyGitHubAPI,
-					Confidence:       types.ConfidenceHigh,
+					ConfidenceScore:  0.7,
+					Confidence:       types.ConfidenceLabel(0.7),
 				}
 			}
 		}

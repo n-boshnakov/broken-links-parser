@@ -29,6 +29,7 @@ type Options struct {
 	IgnorePatterns   []string
 	IgnoreFile       string
 	ScopedIgnoreFile string // path to sectioned .linkignore with per-repo patterns
+	RootRelativeBase string // base dir for /-prefixed links; empty = repo root
 	Concurrency    int
 	Timeout        time.Duration
 	GitHubToken    string            // deprecated: use GitHubTokens
@@ -52,7 +53,8 @@ type Options struct {
 	// Output
 	HTMLPath string
 
-	// OnProgress is called after each link is validated. Passed through to ValidateOptions.
+	// OnProgress reports validation progress over unique absolute URLs (the actual
+	// network work); n and total count unique URLs, not individual links.
 	OnProgress func(n, total int)
 }
 
@@ -150,6 +152,7 @@ func Validate(links []types.Link, opts Options, sm docforge.SourceMap) ([]types.
 		GitHubToken:       opts.GitHubToken,
 		GitHubTokens:      opts.GitHubTokens,
 		RepoRoot:          opts.Root,
+		RootRelativeBase:  opts.RootRelativeBase,
 		OnProgress:        opts.OnProgress,
 		CacheFile:         opts.CacheFile,
 		CacheTTL:          opts.CacheTTL,

@@ -66,3 +66,79 @@ func TestValidate_Integration(t *testing.T) {
 		t.Errorf("concurrency cap violated: max in-flight was %d, want ≤2", maxSeen)
 	}
 }
+
+func TestValidate_DedupesUniqueURLs(t *testing.T) {
+	// Count how many times each path is actually fetched.
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	shared := srv.URL + "/shared"
+	other := srv.URL + "/other"
+	// The shared URL appears many times across different source files.
+	links := []types.Link{
+		{URL: shared, Type: types.LinkTypeAbsolute, SourceFile: "a.md"},
+		{URL: shared, Type: types.LinkTypeAbsolute, SourceFile: "b.md"},
+		{URL: shared, Type: types.LinkTypeAbsolute, SourceFile: "c.md"},
+		{URL: other, Type: types.LinkTypeAbsolute, SourceFile: "a.md"},
+	}
+
+	var progressTotal int64
+	opts := ValidateOptions{
+		Concurrency: 4,
+		Timeout:     5 * time.Second,
+		OnProgress:  func(_, total int) { atomic.StoreInt64(&progressTotal, int64(total)) },
+	}
+	results, _ := Validate(links, opts)
+
+	// Only two unique URLs → only two HTTP requests, despite four links.
+	if got := atomic.LoadInt64(&hits); got != 2 {
+		t.Errorf("HTTP hits = %d, want 2 (one per unique URL)", got)
+	}
+	// Progress total tracks unique URLs, not link count.
+	if got := atomic.LoadInt64(&progressTotal); got != 2 {
+		t.Errorf("progress total = %d, want 2 unique URLs", got)
+	}
+	// Every link gets a valid result with its own source metadata preserved.
+	if len(results) != len(links) {
+		t.Fatalf("got %d results, want %d", len(results), len(links))
+	}
+	for i, r := range results {
+		if !r.Valid {
+			t.Errorf("result[%d] (%s) should be valid, reason=%q", i, links[i].URL, r.Reason)
+		}
+		if r.Link.SourceFile != links[i].SourceFile {
+			t.Errorf("result[%d] SourceFile = %q, want %q (metadata not preserved)", i, r.Link.SourceFile, links[i].SourceFile)
+		}
+	}
+}
+
+func TestValidate_DedupCacheHitsCountLinks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	shared := srv.URL + "/shared"
+	links := []types.Link{
+		{URL: shared, Type: types.LinkTypeAbsolute, SourceFile: "a.md"},
+		{URL: shared, Type: types.LinkTypeAbsolute, SourceFile: "b.md"},
+		{URL: shared, Type: types.LinkTypeAbsolute, SourceFile: "c.md"},
+	}
+
+	cacheFile := filepath.Join(t.TempDir(), "cache.json")
+	opts := ValidateOptions{Concurrency: 2, Timeout: 5 * time.Second, CacheFile: cacheFile}
+
+	// First run populates the cache; nothing served from cache yet.
+	if _, hits := Validate(links, opts); hits != 0 {
+		t.Errorf("first run cacheHits = %d, want 0", hits)
+	}
+	// Second run: all three links share one cached URL. cacheHits counts links,
+	// not unique URLs, matching the prior accounting.
+	if _, hits := Validate(links, opts); hits != 3 {
+		t.Errorf("second run cacheHits = %d, want 3 (one per link sharing the cached URL)", hits)
+	}
+}

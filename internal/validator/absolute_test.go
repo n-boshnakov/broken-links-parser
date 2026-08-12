@@ -82,6 +82,88 @@ func TestValidateAbsolute(t *testing.T) {
 		}
 	})
 
+	// 301 redirect → 404: the final status must be classified (confirms the client
+	// follows redirects, so no manual redirect-following code is needed).
+	t.Run("301 redirect to 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/old" {
+				http.Redirect(w, r, "/gone", http.StatusMovedPermanently)
+				return
+			}
+			w.WriteHeader(404)
+		}))
+		defer srv.Close()
+		res := ValidateAbsolute(absLink(srv.URL+"/old"), srv.Client(), nil, nil)
+		if res.Valid || res.StatusCode != 404 || res.Reason != types.ReasonHTTPError {
+			t.Errorf("expected broken 404 after redirect, got valid=%v status=%d reason=%q", res.Valid, res.StatusCode, res.Reason)
+		}
+	})
+
+	// 401 → AUTH_BLOCKED (not broken)
+	t.Run("401 auth blocked", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(401)
+		}))
+		defer srv.Close()
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, nil)
+		if res.Valid || res.Reason != types.ReasonAuthBlocked || res.StatusCode != 401 {
+			t.Errorf("expected AUTH_BLOCKED, got valid=%v reason=%q status=%d", res.Valid, res.Reason, res.StatusCode)
+		}
+		if res.IsBroken() {
+			t.Error("AUTH_BLOCKED should not count as broken")
+		}
+	})
+
+	// 403 on both HEAD and GET → AUTH_BLOCKED
+	t.Run("403 auth blocked", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(403)
+		}))
+		defer srv.Close()
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, nil)
+		if res.Valid || res.Reason != types.ReasonAuthBlocked {
+			t.Errorf("expected AUTH_BLOCKED, got valid=%v reason=%q", res.Valid, res.Reason)
+		}
+	})
+
+	// 418 (anti-bot "teapot") is reported as a broken HTTP_ERROR at validation time;
+	// the resolver separately skips the AI for it (see resolver tests).
+	t.Run("418 is HTTP_ERROR", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(418)
+		}))
+		defer srv.Close()
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, nil)
+		if res.Valid || res.Reason != types.ReasonHTTPError || res.StatusCode != 418 {
+			t.Errorf("expected HTTP_ERROR 418, got valid=%v reason=%q status=%d", res.Valid, res.Reason, res.StatusCode)
+		}
+	})
+
+	// 403 on HEAD but 200 on GET → valid (server rejects HEAD only)
+	t.Run("403 HEAD fallback GET 200", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodHead {
+				w.WriteHeader(403)
+				return
+			}
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+		res := ValidateAbsolute(absLink(srv.URL), srv.Client(), nil, nil)
+		if !res.Valid || res.StatusCode != 200 {
+			t.Errorf("expected valid via GET fallback, got valid=%v status=%d reason=%q", res.Valid, res.StatusCode, res.Reason)
+		}
+	})
+
+	// Network error (unresolvable host) → NETWORK_ERROR
+	t.Run("network error", func(t *testing.T) {
+		client := &http.Client{Timeout: 2 * time.Second}
+		res := ValidateAbsolute(absLink("https://nonexistent.invalid.host.example/"), client, nil, nil)
+		if res.Valid || res.Reason != types.ReasonNetworkError {
+			t.Errorf("expected NETWORK_ERROR, got valid=%v reason=%q", res.Valid, res.Reason)
+		}
+	})
+
 	// Timeout
 	t.Run("timeout", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

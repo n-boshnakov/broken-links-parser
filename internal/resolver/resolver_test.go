@@ -1,6 +1,8 @@
 package resolver
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +85,35 @@ func TestResolve_WaybackFallback(t *testing.T) {
 	// No AI key → EXTERNAL_NO_AI reason (Wayback enrichment only runs when AI is also enabled).
 	if res[0].UnresolvedReason != types.UnresolvedExternalNoAI {
 		t.Errorf("UnresolvedReason = %q, want EXTERNAL_NO_AI", res[0].UnresolvedReason)
+	}
+}
+
+func TestResolve_SkipsAIForTransientAndBotBlocked(t *testing.T) {
+	// AI endpoint that fails the test if it is ever called.
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("AI must not be called for transient/bot-blocked results")
+		w.WriteHeader(500)
+	}))
+	defer aiSrv.Close()
+	cfg := AIConfig{APIKey: "k", Model: "m", BaseURL: aiSrv.URL}
+
+	cases := []struct {
+		name string
+		r    types.ValidationResult
+	}{
+		{"timeout", types.ValidationResult{Link: types.Link{URL: "https://slow.example.com/", Type: types.LinkTypeAbsolute}, Reason: types.ReasonTimeout}},
+		{"418 teapot", types.ValidationResult{Link: types.Link{URL: "https://bot.example.com/", Type: types.LinkTypeAbsolute}, Reason: types.ReasonHTTPError, StatusCode: 418}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Resolve([]types.ValidationResult{tc.r}, ResolveOptions{EnableAI: true, AI: cfg})
+			if out[0].FixedURL != "" {
+				t.Errorf("expected no fix, got %q", out[0].FixedURL)
+			}
+			if out[0].UnresolvedReason != types.UnresolvedBotBlocked {
+				t.Errorf("UnresolvedReason = %q, want BOT_BLOCKED", out[0].UnresolvedReason)
+			}
+		})
 	}
 }
 

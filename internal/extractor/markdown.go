@@ -94,14 +94,14 @@ func extractImages(masked []byte, path string, _ []byte) []types.Link {
 	var links []types.Link
 	for _, m := range reImage.FindAllSubmatchIndex(masked, -1) {
 		// m[2]:m[3] = alt text, m[4]:m[5] = src url
-		url := string(masked[m[4]:m[5]])
+		url, trimmed := splitURLTitle(string(masked[m[4]:m[5]]))
 		links = append(links, types.Link{
 			URL:        url,
 			Text:       string(masked[m[2]:m[3]]),
 			Type:       types.LinkTypeImage,
 			SourceFile: path,
 			Start:      m[4],
-			End:        m[5],
+			End:        m[5] - trimmed,
 		})
 	}
 	return links
@@ -115,7 +115,7 @@ func extractInline(masked []byte, path string, _ []byte) []types.Link {
 			continue
 		}
 		// m[2]:m[3] = link text, m[4]:m[5] = url
-		url := string(masked[m[4]:m[5]])
+		url, trimmed := splitURLTitle(string(masked[m[4]:m[5]]))
 		if strings.HasPrefix(url, "#") {
 			continue // anchor-only, handled separately
 		}
@@ -125,20 +125,20 @@ func extractInline(masked []byte, path string, _ []byte) []types.Link {
 			Type:       classifyURL(url),
 			SourceFile: path,
 			Start:      m[4],
-			End:        m[5],
+			End:        m[5] - trimmed,
 		})
 	}
 	// Anchor-only links.
 	for _, m := range reAnchor.FindAllSubmatchIndex(masked, -1) {
 		// m[2]:m[3] = link text, m[4]:m[5] = anchor
-		url := string(masked[m[4]:m[5]])
+		url, trimmed := splitURLTitle(string(masked[m[4]:m[5]]))
 		links = append(links, types.Link{
 			URL:        url,
 			Text:       string(masked[m[2]:m[3]]),
 			Type:       types.LinkTypeAnchor,
 			SourceFile: path,
 			Start:      m[4],
-			End:        m[5],
+			End:        m[5] - trimmed,
 		})
 	}
 	return links
@@ -185,6 +185,32 @@ func extractRefs(masked []byte, path string, _ []byte) []types.Link {
 		})
 	}
 	return links
+}
+
+// splitURLTitle separates a Markdown link destination from an optional title,
+// e.g. `/path/img.svg "Alt title"` → `/path/img.svg`. CommonMark allows a title
+// in double quotes, single quotes, or parentheses after whitespace. Returns the
+// destination and the number of trailing bytes removed (so callers can adjust the
+// URL's End offset).
+func splitURLTitle(raw string) (url string, trimmed int) {
+	// Find the first unescaped whitespace; a title (if any) starts after it.
+	i := strings.IndexAny(raw, " \t")
+	if i < 0 {
+		return raw, 0
+	}
+	rest := strings.TrimLeft(raw[i:], " \t")
+	if rest == "" {
+		// Trailing whitespace only, no title.
+		return raw[:i], len(raw) - i
+	}
+	switch rest[0] {
+	case '"', '\'', '(':
+		// Looks like a title — drop everything from the whitespace onward.
+		return raw[:i], len(raw) - i
+	}
+	// Whitespace but no recognizable title: leave the destination intact (a space
+	// in a path is unusual, but don't silently truncate a real URL).
+	return raw, 0
 }
 
 func classifyURL(url string) types.LinkType {

@@ -150,7 +150,8 @@ func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch boo
 			ValidationResult: result,
 			FixedURL:         fixedURL,
 			Strategy:         types.StrategyGitHistory,
-			Confidence:       types.ConfidenceHigh,
+			ConfidenceScore:  0.95,
+			Confidence:       types.ConfidenceLabel(0.95),
 		}
 	}
 
@@ -165,7 +166,8 @@ func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch boo
 		ValidationResult: result,
 		FixedURL:         commitURL,
 		Strategy:         types.StrategyGitHistory,
-		Confidence:       types.ConfidenceHigh,
+		ConfidenceScore:  0.9,
+		Confidence:       types.ConfidenceLabel(0.9),
 		Deleted:          true,
 	}
 }

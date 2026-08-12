@@ -71,8 +71,16 @@ func resolveOne(r types.ValidationResult, opts ResolveOptions, cache *GitCache, 
 			// (e.g. API_BLOCKED) either way.
 			return ResolveViaGitHubAPI(r, opts.GitHubTokens)
 		} else if opts.EnableAI && opts.AI.APIKey != "" {
-			// Skip AI for bot-blocked sites (403) — the page likely exists, just blocks automated requests.
-			if r.StatusCode == 403 || r.StatusCode == 429 {
+			// Skip AI for cases where the page almost certainly still exists and AI
+			// can't help: bot-blocked/rate-limited responses (403/429/418) and
+			// transient timeouts. Sending these to the AI just wastes a request.
+			if r.StatusCode == 403 || r.StatusCode == 429 || r.StatusCode == 418 {
+				return types.ResolutionResult{
+					ValidationResult: r,
+					UnresolvedReason: types.UnresolvedBotBlocked,
+				}
+			}
+			if r.Reason == types.ReasonTimeout {
 				return types.ResolutionResult{
 					ValidationResult: r,
 					UnresolvedReason: types.UnresolvedBotBlocked,

@@ -87,3 +87,27 @@ func TestValidationCache(t *testing.T) {
 		}
 	})
 }
+
+func TestCacheable(t *testing.T) {
+	link := types.Link{URL: "https://example.com", Type: types.LinkTypeAbsolute}
+	cases := []struct {
+		name string
+		r    types.ValidationResult
+		want bool
+	}{
+		{"valid", types.ValidationResult{Link: link, Valid: true}, true},
+		{"settled 404", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 404}, true},
+		{"settled 410", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 410}, true},
+		{"transient 503 not cached", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 503}, false},
+		{"transient 429 not cached", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 429}, false},
+		{"status 0 not cached", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 0}, false},
+		{"timeout not cached", types.ValidationResult{Link: link, Reason: types.ReasonTimeout}, false},
+		{"network error not cached", types.ValidationResult{Link: link, Reason: types.ReasonNetworkError}, false},
+		{"auth-blocked not cached", types.ValidationResult{Link: link, Reason: types.ReasonAuthBlocked, StatusCode: 403}, false},
+	}
+	for _, tc := range cases {
+		if got := cacheable(tc.r); got != tc.want {
+			t.Errorf("%s: cacheable() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
