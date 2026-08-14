@@ -77,13 +77,52 @@ func (c *GitCache) log(repoRoot, path string) (gitLogResult, error) {
 	return result, nil
 }
 
+// maxRenameHops bounds how far a rename chain (A→B→C→…) is followed, guarding
+// against pathological histories or cycles.
+const maxRenameHops = 10
+
+// runGitLog resolves the fate of path within repoRoot, following rename chains to
+// their terminal path. A file renamed A→B→C (where the link points to A) resolves
+// to C, not the intermediate B. Returns the final newPath for a rename chain, or the
+// deletion SHA when the chain ends in a deletion.
 func runGitLog(repoRoot, path string) (gitLogResult, error) {
+	current := path
+	for hop := 0; hop < maxRenameHops; hop++ {
+		newPath, deletionSHA, ok := renameOrDeleteOnce(repoRoot, current)
+		if !ok {
+			// No rename/deletion for the current path.
+			if hop == 0 {
+				return gitLogResult{}, nil // original path was modified/added, not moved
+			}
+			// We followed at least one rename; `current` is the terminal path.
+			return gitLogResult{newPath: current}, nil
+		}
+		if deletionSHA != "" {
+			return gitLogResult{deletionSHA: deletionSHA}, nil
+		}
+		// Renamed to newPath — if it exists at HEAD we're done; otherwise keep following.
+		current = newPath
+		if pathExistsAtHEAD(repoRoot, current) {
+			return gitLogResult{newPath: current}, nil
+		}
+	}
+	// Hit the hop cap — return whatever terminal path we reached (best effort).
+	if current != path {
+		return gitLogResult{newPath: current}, nil
+	}
+	return gitLogResult{}, nil
+}
+
+// renameOrDeleteOnce inspects the most recent commit touching path and reports a
+// single rename (newPath) or deletion (deletionSHA). ok is false when the commit
+// neither renamed nor deleted the path (modified/added), or when there is no history.
+func renameOrDeleteOnce(repoRoot, path string) (newPath, deletionSHA string, ok bool) {
 	// Find the most recent commit that touched this path.
 	shaCmd := exec.Command("git", "-C", repoRoot,
 		"log", "--all", "--format=%H", "--max-count=1", "--", path)
 	shaOut, err := shaCmd.Output()
 	if err != nil || len(bytes.TrimSpace(shaOut)) == 0 {
-		return gitLogResult{}, nil
+		return "", "", false
 	}
 	sha := strings.TrimSpace(string(shaOut))
 
@@ -92,22 +131,25 @@ func runGitLog(repoRoot, path string) (gitLogResult, error) {
 		"show", "--name-status", "--format=", sha)
 	showOut, err := showCmd.Output()
 	if err != nil {
-		return gitLogResult{}, nil
+		return "", "", false
 	}
 
 	for _, line := range strings.Split(string(showOut), "\n") {
 		parts := strings.Fields(line)
-		if len(parts) == 3 && strings.HasPrefix(parts[0], "R") &&
-			parts[1] == path {
-			return gitLogResult{newPath: parts[2]}, nil
+		if len(parts) == 3 && strings.HasPrefix(parts[0], "R") && parts[1] == path {
+			return parts[2], "", true
 		}
 		if len(parts) == 2 && parts[0] == "D" && parts[1] == path {
-			return gitLogResult{deletionSHA: sha}, nil
+			return "", sha, true
 		}
 	}
+	return "", "", false
+}
 
-	// The path was modified or added in that commit — not a rename or deletion.
-	return gitLogResult{}, nil
+// pathExistsAtHEAD reports whether path exists in the repo's HEAD tree.
+func pathExistsAtHEAD(repoRoot, path string) bool {
+	cmd := exec.Command("git", "-C", repoRoot, "cat-file", "-e", "HEAD:"+path)
+	return cmd.Run() == nil
 }
 
 // ResolveRelative attempts to find the correct path for a broken relative link

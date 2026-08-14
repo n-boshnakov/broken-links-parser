@@ -20,7 +20,7 @@ func TestExtract_Integration(t *testing.T) {
 	writeFile("docs/guide.md", "[intro](../intro.md)\n[external](https://example.com)\n")
 	writeFile("web/index.html", `<a href="./page.html">page</a><img src="./logo.png">`)
 
-	links, err := Extract(root, nil)
+	links, err := Extract(root, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

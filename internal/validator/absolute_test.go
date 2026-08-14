@@ -207,3 +207,53 @@ func TestTokenForURL(t *testing.T) {
 	}
 }
 
+
+func TestCheckURLStrict(t *testing.T) {
+	t.Run("plain 200 accepted", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+		if !CheckURLStrict(srv.URL + "/docs/page") {
+			t.Error("expected a plain 200 specific page to be accepted")
+		}
+	})
+
+	t.Run("redirect to homepage rejected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.Redirect(w, r, "/", http.StatusFound)
+				return
+			}
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+		if CheckURLStrict(srv.URL + "/moved/page") {
+			t.Error("expected a redirect-to-homepage soft-404 to be rejected")
+		}
+	})
+
+	t.Run("redirect to another specific page accepted", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/old/page" {
+				http.Redirect(w, r, "/new/page", http.StatusMovedPermanently)
+				return
+			}
+			w.WriteHeader(200)
+		}))
+		defer srv.Close()
+		if !CheckURLStrict(srv.URL + "/old/page") {
+			t.Error("expected a redirect to another specific page to be accepted")
+		}
+	})
+
+	t.Run("404 rejected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(404)
+		}))
+		defer srv.Close()
+		if CheckURLStrict(srv.URL + "/gone") {
+			t.Error("expected a 404 to be rejected")
+		}
+	})
+}

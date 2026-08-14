@@ -54,6 +54,7 @@ const (
 	UnresolvedAINoValidCandidate = "AI_NO_VALID_CANDIDATE"  // AI returned candidates but all failed HTTP validation
 	UnresolvedAIAuthError       = "AI_AUTH_ERROR"           // API key is missing, invalid, or rejected
 	UnresolvedSourceMalformed   = "SOURCE_MALFORMED"        // the original broken URL is itself malformed
+	UnresolvedUnsupportedGitHubURL = "UNSUPPORTED_GITHUB_URL" // GitHub URL is not a resolvable file link (e.g. /tree/, /issues/, repo root, profile)
 )
 
 // Candidate is one considered replacement URL for a broken link, retained so the

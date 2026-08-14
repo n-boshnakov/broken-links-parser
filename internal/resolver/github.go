@@ -23,21 +23,37 @@ func apiBaseForHost(host string) string {
 	return "https://" + host + "/api/v3"
 }
 
-// parseGitHubURL extracts owner, repo, branch, file path, and fragment from a GitHub URL.
-// Supports: https://<host>/owner/repo/blob/branch/path/to/file#anchor
+// parseGitHubURL extracts owner, repo, branch, and file path from a GitHub URL.
+// Supports https://<host>/owner/repo/blob/branch/path/to/file, and also
+// /tree/branch/path/to/file when the path has a file extension — GitHub uses /tree/
+// for directories, but authors sometimes mistype a file link as /tree/; such a link
+// is still resolvable (and gets rebuilt as a correct /blob/ URL).
 func parseGitHubURL(rawURL string) (owner, repo, branch, filePath string, ok bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return
 	}
 	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 5)
-	if len(parts) < 5 || parts[2] != "blob" {
+	if len(parts) < 5 {
 		return
 	}
+	verb := parts[2]
 	// filePath does not include the fragment; u.Fragment holds it separately.
 	// Trim any trailing slash that can appear when the URL is written as path/#anchor.
-	filePath = strings.TrimRight(parts[4], "/")
-	return parts[0], parts[1], parts[3], filePath, true
+	path := strings.TrimRight(parts[4], "/")
+	switch verb {
+	case "blob":
+		// A file link.
+	case "tree":
+		// A directory link — only treat as a file when the path clearly names a file
+		// (has an extension), i.e. a mistyped /tree/ that should have been /blob/.
+		if filepath.Ext(path) == "" {
+			return
+		}
+	default:
+		return
+	}
+	return parts[0], parts[1], parts[3], path, true
 }
 
 // findLocalClone checks reposDir, then cacheDir, for a valid git repo matching owner/repo.
@@ -124,10 +140,13 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir stri
 	}
 }
 
-// buildFileIndex fetches the Git Trees API for owner/repo and returns a map
-// of basename → full tree path for all blob entries.
-func buildFileIndex(client *http.Client, apiBase, owner, repo, token string) (map[string]string, error) {
-	apiURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/HEAD?recursive=1", apiBase, owner, repo)
+// buildFileIndex fetches the Git Trees API for owner/repo at the given ref and
+// returns a map of basename → full tree path for all blob entries.
+func buildFileIndex(client *http.Client, apiBase, owner, repo, ref, token string) (map[string]string, error) {
+	if ref == "" {
+		ref = "HEAD"
+	}
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1", apiBase, owner, repo, url.PathEscape(ref))
 	return buildFileIndexFromURL(client, apiURL, token)
 }
 
@@ -164,6 +183,7 @@ func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[strin
 			Path string `json:"path"`
 			Type string `json:"type"`
 		} `json:"tree"`
+		Truncated bool `json:"truncated"`
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -171,6 +191,13 @@ func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[strin
 	}
 	if err := json.Unmarshal(data, &body); err != nil {
 		return nil, err
+	}
+
+	// A truncated tree means the repo is large enough that the Trees API returned a
+	// partial listing; a genuine file may be absent from the index. We don't paginate
+	// here, but note it so a false "no history" is at least explainable.
+	if body.Truncated {
+		fmt.Fprintf(os.Stderr, "github: tree listing truncated for %s — some paths may be missing from the index\n", apiURL)
 	}
 
 	index := make(map[string]string, len(body.Tree))
@@ -184,6 +211,37 @@ func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[strin
 		}
 	}
 	return index, nil
+}
+
+// treeIndexWithFallback builds the file index for ref, retrying transient rate-limit
+// errors, and falls back to HEAD when the requested ref's tree is not found (404).
+func treeIndexWithFallback(client *http.Client, apiBase, owner, repo, ref, token string) (map[string]string, error) {
+	attempt := func(r string) (map[string]string, error) {
+		var index map[string]string
+		var err error
+		for i := 0; i < 3; i++ {
+			index, err = buildFileIndex(client, apiBase, owner, repo, r, token)
+			if err == nil {
+				return index, nil
+			}
+			if isRateLimitError(err) {
+				backoff := time.Duration(1<<uint(i))*time.Second + time.Duration(rand.Intn(500))*time.Millisecond
+				time.Sleep(backoff)
+				continue
+			}
+			break
+		}
+		return index, err
+	}
+
+	index, err := attempt(ref)
+	if err != nil && ref != "" && ref != "HEAD" {
+		// The branch/ref may not exist (renamed, deleted); retry against HEAD.
+		if ae, ok := err.(*apiError); ok && ae.status == http.StatusNotFound {
+			return attempt("HEAD")
+		}
+	}
+	return index, err
 }
 
 // ResolveViaGitHubAPI resolves a broken absolute GitHub link using the GitHub API.
@@ -201,14 +259,20 @@ func ResolveViaGitHubAPI(result types.ValidationResult, tokens map[string]string
 func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase string) types.ResolutionResult {
 	owner, repo, branch, filePath, ok := parseGitHubURL(result.Link.URL)
 	if !ok {
-		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
+		// Not a /blob/<branch>/<file> link — e.g. a /tree/ directory, /issues/, /pull/,
+		// a bare repo root, or a user profile. We can't resolve these via file history,
+		// so say so rather than the misleading "no history found".
+		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedUnsupportedGitHubURL}
 	}
 
-	// If the URL references a specific commit SHA (40 hex chars), the file at that
-	// commit may legitimately return 404 because the line range has changed or the
-	// file was renamed since. Don't report this as "deleted" — it's a pinned reference.
-	if isCommitSHA(branch) {
-		return types.ResolutionResult{ValidationResult: result, UnresolvedReason: types.UnresolvedNoHistory}
+	// A commit-SHA-pinned URL (e.g. /blob/<40-hex>/...) can 404 because the line range
+	// changed or the file moved since that commit. Rather than give up, look the file
+	// up at HEAD — it often still exists — but rebuild the fix against HEAD (not the
+	// stale SHA) and report it at reduced confidence.
+	shaPinned := isCommitSHA(branch)
+	lookupRef := branch
+	if shaPinned {
+		lookupRef = "HEAD"
 	}
 
 	u, _ := url.Parse(result.Link.URL)
@@ -220,27 +284,37 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 		filePath = filePath[:i]
 	}
 	fileName := filepath.Base(filePath)
-	apiURL := fmt.Sprintf("%s/repos/%s/%s/git/trees/HEAD?recursive=1", apiBase, owner, repo)
 
-	var index map[string]string
-	var indexErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		index, indexErr = buildFileIndexFromURL(client, apiURL, token)
-		if indexErr == nil {
-			break
-		}
-		if isRateLimitError(indexErr) {
-			backoff := time.Duration(1<<uint(attempt))*time.Second + time.Duration(rand.Intn(500))*time.Millisecond
-			time.Sleep(backoff)
-			continue
-		}
-		break
-	}
+	index, indexErr := treeIndexWithFallback(client, apiBase, owner, repo, lookupRef, token)
 
 	if indexErr != nil {
 		return types.ResolutionResult{
 			ValidationResult: result,
 			UnresolvedReason: classifyAPIError(indexErr),
+		}
+	}
+
+	// rebuildFix rebuilds the fixed URL for newPath, targeting HEAD for SHA-pinned
+	// links (so the fix isn't pinned to the stale commit) and preserving the original
+	// branch otherwise. confFull is the confidence for a normal match; SHA-pinned
+	// matches are down-weighted since HEAD may differ from the pinned commit.
+	rebuildFix := func(newPath string, confFull float64) types.ResolutionResult {
+		score := confFull
+		var fixedURL string
+		if shaPinned {
+			fixedURL = rebuildGitHubURLBranch(result.Link.URL, newPath, "HEAD")
+			if score > 0.6 {
+				score = 0.6
+			}
+		} else {
+			fixedURL = rebuildGitHubURL(result.Link.URL, newPath)
+		}
+		return types.ResolutionResult{
+			ValidationResult: result,
+			FixedURL:         fixedURL,
+			Strategy:         types.StrategyGitHubAPI,
+			ConfidenceScore:  score,
+			Confidence:       types.ConfidenceLabel(score),
 		}
 	}
 
@@ -250,16 +324,10 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 	case 0:
 		// Not in current tree — check if the last commit touching this path was a rename or deletion.
 		if sha := findDeletionCommit(client, apiBase, owner, repo, filePath, token); sha != "" {
-			// Inspect the commit: if it's a rename, return the new path as the fix.
+			// Inspect the commit: if it's a rename, follow the chain to its terminal path.
 			if newPath := findRenamedPath(client, apiBase, owner, repo, sha, filePath, token); newPath != "" {
-				fixedURL := rebuildGitHubURL(result.Link.URL, newPath)
-				return types.ResolutionResult{
-					ValidationResult: result,
-					FixedURL:         fixedURL,
-					Strategy:         types.StrategyGitHubAPI,
-					ConfidenceScore:  0.95,
-					Confidence:       types.ConfidenceLabel(0.95),
-				}
+				newPath = followRenameChain(client, apiBase, owner, repo, index, newPath, token)
+				return rebuildFix(newPath, 0.95)
 			}
 			// Commit exists but was a deletion, not a rename.
 			fixedURL := fmt.Sprintf("%s/%s/%s/commit/%s", webBase, owner, repo, sha)
@@ -277,27 +345,14 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 			UnresolvedReason: types.UnresolvedNoHistory,
 		}
 	case 1:
-		fixedURL := rebuildGitHubURL(result.Link.URL, matches[0])
-		return types.ResolutionResult{
-			ValidationResult: result,
-			FixedURL:         fixedURL,
-			Strategy:         types.StrategyGitHubAPI,
-			ConfidenceScore:  0.95,
-			Confidence:       types.ConfidenceLabel(0.95),
-		}
+		return rebuildFix(matches[0], 0.95)
 	default:
 		// Multiple files share the same basename — use commit history to find the exact rename.
 		if sha := findRenameCommit(client, apiBase, owner, repo, filePath, token); sha != "" {
 			newPath := findRenamedPath(client, apiBase, owner, repo, sha, filePath, token)
 			if newPath != "" {
-				fixedURL := rebuildGitHubURL(result.Link.URL, newPath)
-				return types.ResolutionResult{
-					ValidationResult: result,
-					FixedURL:         fixedURL,
-					Strategy:         types.StrategyGitHubAPI,
-					ConfidenceScore:  0.7,
-					Confidence:       types.ConfidenceLabel(0.7),
-				}
+				newPath = followRenameChain(client, apiBase, owner, repo, index, newPath, token)
+				return rebuildFix(newPath, 0.7)
 			}
 		}
 		return types.ResolutionResult{
@@ -340,6 +395,38 @@ func classifyAPIError(err error) string {
 // Same as findDeletionCommit — both just need the last touching commit.
 func findRenameCommit(client *http.Client, apiBase, owner, repo, filePath, token string) string {
 	return findDeletionCommit(client, apiBase, owner, repo, filePath, token)
+}
+
+// followRenameChain follows a rename chain via the commits API to its terminal path.
+// Given a first-hop newPath (from findRenamedPath), if that path isn't present in the
+// current tree index it was renamed again; keep following until the path is in the
+// index, no further rename is found, or maxRenameHops is reached. Returns the terminal
+// path (which may be the input newPath if it can't be advanced).
+func followRenameChain(client *http.Client, apiBase, owner, repo string, index map[string]string, newPath, token string) string {
+	inIndex := func(p string) bool {
+		for _, full := range index {
+			if full == p {
+				return true
+			}
+		}
+		return false
+	}
+	current := newPath
+	for hop := 0; hop < maxRenameHops; hop++ {
+		if inIndex(current) {
+			return current
+		}
+		sha := findRenameCommit(client, apiBase, owner, repo, current, token)
+		if sha == "" {
+			return current
+		}
+		next := findRenamedPath(client, apiBase, owner, repo, sha, current, token)
+		if next == "" || next == current {
+			return current
+		}
+		current = next
+	}
+	return current
 }
 
 // findRenamedPath inspects a commit's files via the GitHub API and returns the new path
@@ -422,14 +509,24 @@ func isCommitSHA(s string) bool {
 }
 
 // rebuildGitHubURL replaces the file path portion of a GitHub blob URL with newPath,
-// preserving the original scheme, host (so GitHub Enterprise hosts survive), and
-// fragment (anchor) if present.
+// preserving the original scheme, host (so GitHub Enterprise hosts survive), branch,
+// and fragment (anchor) if present.
 func rebuildGitHubURL(original, newPath string) string {
+	_, _, branch, _, ok := parseGitHubURL(original)
+	if !ok {
+		return original
+	}
+	return rebuildGitHubURLBranch(original, newPath, branch)
+}
+
+// rebuildGitHubURLBranch is rebuildGitHubURL with an explicit branch/ref override
+// (used when a fix should target HEAD instead of a stale commit SHA).
+func rebuildGitHubURLBranch(original, newPath, branch string) string {
 	u, err := url.Parse(original)
 	if err != nil {
 		return original
 	}
-	owner, repo, branch, _, ok := parseGitHubURL(original)
+	owner, repo, _, _, ok := parseGitHubURL(original)
 	if !ok {
 		return original
 	}

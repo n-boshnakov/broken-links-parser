@@ -72,7 +72,16 @@ type Result struct {
 // files available in local clones under opts.ReposDir.
 // Returns extracted links and the parsed SourceMap (nil if no manifest).
 func Extract(opts Options) ([]types.Link, docforge.SourceMap, error) {
-	links, err := extractor.Extract(opts.Root, opts.Dirs)
+	// Source-ignore globs (root-relative) come from the [sources] section of the
+	// scoped ignore file; matching files/folders are skipped entirely at scan time.
+	var sourceIgnore []string
+	if opts.ScopedIgnoreFile != "" {
+		if si, err := validator.LoadScopedIgnoreFile(opts.ScopedIgnoreFile); err == nil {
+			sourceIgnore = si.SourceSkipGlobsFor(opts.Root)
+		}
+	}
+
+	links, err := extractor.Extract(opts.Root, opts.Dirs, sourceIgnore)
 	if err != nil {
 		return nil, nil, err
 	}

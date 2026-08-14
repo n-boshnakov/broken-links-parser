@@ -85,6 +85,80 @@ func TestResolveRelative_Rename(t *testing.T) {
 	}
 }
 
+func TestResolveRelative_TransitiveRename(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// A → B → C rename chain; the link points to A.
+	_ = os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\n"), 0o644)
+	commit(t, dir, "add a.md")
+	gitMv := func(from, to string) {
+		t.Helper()
+		cmd := exec.Command("git", "-C", dir, "mv", from, to)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git mv %s %s: %v\n%s", from, to, err, out)
+		}
+	}
+	gitMv("a.md", "b.md")
+	commit(t, dir, "rename a.md to b.md")
+	gitMv("b.md", "c.md")
+	commit(t, dir, "rename b.md to c.md")
+
+	sourceFile := filepath.Join(dir, "source.md")
+	_ = os.WriteFile(sourceFile, []byte(""), 0o644)
+
+	result := types.ValidationResult{
+		Link:   types.Link{URL: "a.md", Type: types.LinkTypeRelative, SourceFile: sourceFile},
+		Valid:  false,
+		Reason: types.ReasonFileNotFound,
+	}
+	res := ResolveRelative(result, dir, true, NewGitCache())
+	if res.FixedURL == "" {
+		t.Fatal("expected a FixedURL, got empty")
+	}
+	// Must resolve to the TERMINAL path c.md, not the intermediate b.md.
+	if !strings.Contains(res.FixedURL, "c.md") {
+		t.Errorf("FixedURL %q should point to the terminal path c.md", res.FixedURL)
+	}
+	if strings.Contains(res.FixedURL, "b.md") {
+		t.Errorf("FixedURL %q should NOT stop at the intermediate b.md", res.FixedURL)
+	}
+}
+
+func TestResolveRelative_RenameChainEndingInDeletion(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	_ = os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\n"), 0o644)
+	commit(t, dir, "add a.md")
+	cmd := exec.Command("git", "-C", dir, "mv", "a.md", "b.md")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v\n%s", err, out)
+	}
+	commit(t, dir, "rename a.md to b.md")
+	// Now delete b.md.
+	rm := exec.Command("git", "-C", dir, "rm", "b.md")
+	if out, err := rm.CombinedOutput(); err != nil {
+		t.Fatalf("git rm: %v\n%s", err, out)
+	}
+	commit(t, dir, "delete b.md")
+
+	sourceFile := filepath.Join(dir, "source.md")
+	_ = os.WriteFile(sourceFile, []byte(""), 0o644)
+
+	result := types.ValidationResult{
+		Link:   types.Link{URL: "a.md", Type: types.LinkTypeRelative, SourceFile: sourceFile},
+		Valid:  false,
+		Reason: types.ReasonFileNotFound,
+	}
+	res := ResolveRelative(result, dir, true, NewGitCache())
+	// The chain ends in deletion; expect a deletion-commit result.
+	if !res.Deleted {
+		t.Errorf("expected Deleted=true for a chain ending in deletion, got FixedURL=%q Deleted=%v reason=%q",
+			res.FixedURL, res.Deleted, res.UnresolvedReason)
+	}
+}
+
 func TestResolveRelative_Deletion(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)

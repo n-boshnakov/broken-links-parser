@@ -103,11 +103,38 @@ func ValidateAbsolute(link types.Link, client *http.Client, patterns []string, t
 	return types.ValidationResult{Link: link, Valid: false, Reason: types.ReasonHTTPError, StatusCode: status}
 }
 
-// CheckURL performs a HEAD→GET check on a raw URL string and returns true if reachable.
-func CheckURL(rawURL string) bool {
+// CheckURLStrict is a strict reachability check for accepting AI-suggested
+// replacements. In addition to requiring a 2xx/3xx status, it rejects a URL that
+// redirects from a specific page down to the site homepage ("/" or empty path) —
+// a common soft-404 pattern where a moved page silently lands on the landing page.
+func CheckURLStrict(rawURL string) bool {
+	orig, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	status, err := headWithFallback(client, rawURL, nil)
-	return err == nil && status >= 200 && status < 400
+	httpReq, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	httpReq.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return false
+	}
+	// Reject redirect-to-homepage soft-404: the original asked for a specific page but
+	// the final URL is the site root.
+	final := resp.Request.URL
+	origSpecific := strings.Trim(orig.Path, "/") != ""
+	finalGeneric := final != nil && strings.Trim(final.Path, "/") == ""
+	if origSpecific && finalGeneric {
+		return false
+	}
+	return true
 }
 
 func headWithFallback(client *http.Client, url string, tokens map[string]string) (int, error) {

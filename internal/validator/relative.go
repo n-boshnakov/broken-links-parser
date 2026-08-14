@@ -168,12 +168,13 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot, rootRelative
 			}
 		}
 		// No exact match — find the closest anchor as a suggestion.
-		suggested := closestAnchor(normFragment, anchors)
+		suggested, score := closestAnchorScored(normFragment, anchors)
 		return types.ValidationResult{
-			Link:            link,
-			Valid:           false,
-			Reason:          types.ReasonAnchorNotFound,
-			SuggestedAnchor: suggested,
+			Link:                 link,
+			Valid:                false,
+			Reason:               types.ReasonAnchorNotFound,
+			SuggestedAnchor:      suggested,
+			SuggestedAnchorScore: score,
 		}
 	}
 
@@ -241,8 +242,17 @@ func resolveTarget(target string) (string, targetKind) {
 // closestAnchor returns the best matching anchor from candidates for the given fragment.
 // Tries passes in order: prefix, substring, reverse-substring, reverse-prefix, Levenshtein.
 func closestAnchor(fragment string, candidates []string) string {
+	s, _ := closestAnchorScored(fragment, candidates)
+	return s
+}
+
+// closestAnchorScored is closestAnchor with a 0.0–1.0 confidence for the match.
+// The passes and their order are identical to closestAnchor (so the pinned per-pass
+// behaviour is preserved); each pass carries a score reflecting how strong its match is.
+// Returns ("", 0) when no pass matches.
+func closestAnchorScored(fragment string, candidates []string) (string, float64) {
 	if len(candidates) == 0 {
-		return ""
+		return "", 0
 	}
 
 	// Pass 1: fragment is a prefix of a candidate (e.g. #foo → #foo-deprecated).
@@ -256,7 +266,7 @@ func closestAnchor(fragment string, candidates []string) string {
 		}
 	}
 	if prefixBest != "" {
-		return prefixBest
+		return prefixBest, 0.9
 	}
 
 	// Pass 2: fragment is a substring of a candidate
@@ -271,7 +281,7 @@ func closestAnchor(fragment string, candidates []string) string {
 		}
 	}
 	if subBest != "" {
-		return subBest
+		return subBest, 0.6
 	}
 
 	// Pass 3: candidate is a substring of fragment
@@ -286,7 +296,7 @@ func closestAnchor(fragment string, candidates []string) string {
 		}
 	}
 	if revSubBest != "" {
-		return revSubBest
+		return revSubBest, 0.6
 	}
 
 	// Pass 4: candidate is a prefix of fragment
@@ -300,7 +310,7 @@ func closestAnchor(fragment string, candidates []string) string {
 		}
 	}
 	if revPrefixBest != "" {
-		return revPrefixBest
+		return revPrefixBest, 0.9
 	}
 
 	// Pass 5: Levenshtein distance.
@@ -319,7 +329,15 @@ func closestAnchor(fragment string, candidates []string) string {
 		threshold = 12
 	}
 	if bestDist <= threshold && best != "" {
-		return best
+		// Closer edit distance → higher score, scaled within the pass's band.
+		score := 0.4 + 0.4*(1-float64(bestDist)/float64(threshold))
+		if score < 0.3 {
+			score = 0.3
+		}
+		if score > 0.7 {
+			score = 0.7
+		}
+		return best, score
 	}
 
 	// Pass 6: word-token overlap — handles word-reorder and leading-dash fragments.
@@ -339,10 +357,10 @@ func closestAnchor(fragment string, candidates []string) string {
 			}
 		}
 		if bestOverlap != "" {
-			return bestOverlap
+			return bestOverlap, 0.5 + 0.4*bestRatio
 		}
 	}
-	return ""
+	return "", 0
 }
 
 // levenshtein computes the edit distance between two strings.
