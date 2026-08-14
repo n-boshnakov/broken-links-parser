@@ -136,7 +136,7 @@ var extractCmd = &cobra.Command{
 
 		// Stage 4: Report
 		if opts.HTMLPath != "" {
-			if err := reporter.WriteHTML(opts.HTMLPath, opts.Root, result); err != nil {
+			if err := reporter.WriteHTML(opts.HTMLPath, opts.Root, opts.RootRelativeBase, result); err != nil {
 				return fmt.Errorf("writing HTML report: %w", err)
 			}
 			fmt.Printf("HTML report written to %s\n", opts.HTMLPath)

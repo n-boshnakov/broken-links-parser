@@ -202,3 +202,68 @@ func TestValidateRelative_DirectoryTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestClosestAnchorScored(t *testing.T) {
+	cases := []struct {
+		name       string
+		fragment   string
+		candidates []string
+		wantAnchor string
+		minScore   float64
+		maxScore   float64
+	}{
+		{"prefix match", "etcd-components-webhook", []string{"etcd-components-webhook-deprecated", "other"}, "etcd-components-webhook-deprecated", 0.9, 0.9},
+		{"reverse-substring wins over reverse-prefix (candidate contained in fragment)", "networkpolicy-controller-registrar", []string{"networkpolicy-controller", "other"}, "networkpolicy-controller", 0.6, 0.6},
+		{"reverse-substring match", "use-case-3-monitoring-backup-health", []string{"monitoring-backup-health", "x"}, "monitoring-backup-health", 0.6, 0.6},
+		{"token-overlap match", "gardener-provided-credentials", []string{"shoot-credentials-gardener-managed", "unrelated"}, "shoot-credentials-gardener-managed", 0.7, 0.9},
+		{"no match", "totally-unrelated-xyz", []string{"something-else-entirely"}, "", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAnchor, gotScore := closestAnchorScored(tc.fragment, tc.candidates)
+			if gotAnchor != tc.wantAnchor {
+				t.Errorf("anchor = %q, want %q", gotAnchor, tc.wantAnchor)
+			}
+			if gotScore < tc.minScore || gotScore > tc.maxScore {
+				t.Errorf("score = %v, want in [%v, %v]", gotScore, tc.minScore, tc.maxScore)
+			}
+		})
+	}
+	// The string-only wrapper must agree with the scored variant's anchor.
+	if s := closestAnchor("etcd-components-webhook", []string{"etcd-components-webhook-deprecated"}); s != "etcd-components-webhook-deprecated" {
+		t.Errorf("closestAnchor wrapper = %q", s)
+	}
+}
+
+func TestValidateRelative_SuggestedAnchorScoreSet(t *testing.T) {
+	dir := t.TempDir()
+	// Target file with a heading that a fuzzy fragment should match.
+	target := filepath.Join(dir, "guide.md")
+	_ = os.WriteFile(target, []byte("# Installation Steps\n"), 0o644)
+	src := filepath.Join(dir, "src.md")
+	_ = os.WriteFile(src, []byte(""), 0o644)
+
+	t.Run("fuzzy anchor sets a positive score", func(t *testing.T) {
+		link := types.Link{URL: "guide.md#installation-step", Type: types.LinkTypeRelative, SourceFile: src}
+		res := ValidateRelative(link, nil, "", "")
+		if res.Reason != types.ReasonAnchorNotFound {
+			t.Fatalf("Reason = %q, want ANCHOR_NOT_FOUND", res.Reason)
+		}
+		if res.SuggestedAnchor == "" || res.SuggestedAnchorScore <= 0 {
+			t.Errorf("expected a scored suggestion, got anchor=%q score=%v", res.SuggestedAnchor, res.SuggestedAnchorScore)
+		}
+	})
+
+	t.Run("no candidate leaves score zero", func(t *testing.T) {
+		empty := filepath.Join(dir, "empty.md")
+		_ = os.WriteFile(empty, []byte("no headings here\n"), 0o644)
+		link := types.Link{URL: "empty.md#nonexistent-heading", Type: types.LinkTypeRelative, SourceFile: src}
+		res := ValidateRelative(link, nil, "", "")
+		if res.Reason != types.ReasonAnchorNotFound {
+			t.Fatalf("Reason = %q, want ANCHOR_NOT_FOUND", res.Reason)
+		}
+		if res.SuggestedAnchorScore != 0 {
+			t.Errorf("expected score 0 with no candidates, got %v", res.SuggestedAnchorScore)
+		}
+	})
+}

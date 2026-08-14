@@ -156,6 +156,8 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			return "AI suggestions did not pass validation"
 		case types.UnresolvedSourceMalformed:
 			return "Source URL is malformed"
+		case types.UnresolvedUnsupportedGitHubURL:
+			return "Not a resolvable file link"
 		case types.UnresolvedNoHistory:
 			return "No history found"
 		default:
@@ -183,6 +185,9 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 			}
 			return "Wayback + AI"
 		case "anchor-suggestion":
+			if conf != "" {
+				return "Closest match (" + conf + " confidence)"
+			}
 			return "Closest match"
 		}
 		return r.Resolution.Strategy
@@ -350,7 +355,19 @@ function sort(col) {
 
 // WriteHTML writes an interactive HTML report to outPath.
 // root is used to compute source file GitHub URLs in the report.
-func WriteHTML(outPath, root string, r *pipeline.Result) error {
+// rootRelativeBase is the content root for resolving root-relative ("/…") links in
+// anchor suggestions; pass "" when not configured.
+func WriteHTML(outPath, root, rootRelativeBase string, r *pipeline.Result) error {
+	// Content root relative to the repo root (e.g. "hugo/content"), for resolving
+	// root-relative anchor-suggestion URLs the same way the validator does. Empty when
+	// unset or equal to root.
+	contentRel := ""
+	if rootRelativeBase != "" {
+		if rel, err := filepath.Rel(root, rootRelativeBase); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			contentRel = filepath.ToSlash(rel)
+		}
+	}
+
 	// Resolve the remote URL and default branch for the primary scanned repo.
 	primaryRemote := strings.TrimSuffix(resolver.GetRemoteURL(root), ".git")
 	primaryBranch := getDefaultBranch(root)
@@ -425,9 +442,15 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 				}
 				suggested := u + "#" + v.SuggestedAnchor
 				// If we have a GitHub source URL, resolve the relative suggestion to an
-				// absolute GitHub URL so the user can click through directly.
+				// absolute GitHub URL so the user can click through directly. Root-relative
+				// ("/…") targets need the content root, which only applies to the primary
+				// tree — pass contentRel only for primary-repo rows (empty for docforge).
 				if strings.HasPrefix(sourceURL, "https://github.com/") {
-					if abs := resolveGitHubAnchorURL(sourceURL, u, v.SuggestedAnchor); abs != "" {
+					cr := contentRel
+					if l.SourceRepo != "" {
+						cr = ""
+					}
+					if abs := resolveGitHubAnchorURL(sourceURL, u, v.SuggestedAnchor, cr); abs != "" {
 						suggested = abs
 					}
 				}
@@ -435,6 +458,8 @@ func WriteHTML(outPath, root string, r *pipeline.Result) error {
 					ValidationResult: v,
 					FixedURL:         suggested,
 					Strategy:         "anchor-suggestion",
+					ConfidenceScore:  v.SuggestedAnchorScore,
+					Confidence:       types.ConfidenceLabel(v.SuggestedAnchorScore),
 				}
 				row.Resolution = &synth
 			}
@@ -504,8 +529,11 @@ func getDefaultBranch(repoRoot string) string {
 // sourceURL is the GitHub blob URL of the file containing the broken link.
 // relTarget is the relative path portion of the broken link (without fragment).
 // anchor is the suggested anchor fragment.
+// contentRel is the content root's path relative to the repo root (e.g. "hugo/content"),
+// used to resolve root-relative ("/…") targets the same way the validator does; pass ""
+// when unknown, in which case root-relative targets return "" (no misleading URL).
 // Returns "" if sourceURL is not a recognised GitHub URL.
-func resolveGitHubAnchorURL(sourceURL, relTarget, anchor string) string {
+func resolveGitHubAnchorURL(sourceURL, relTarget, anchor, contentRel string) string {
 	// sourceURL: https://github.com/owner/repo/blob/branch/path/to/source.md
 	// Strip fragment and trailing slash from sourceURL first.
 	base := sourceURL
@@ -526,21 +554,37 @@ func resolveGitHubAnchorURL(sourceURL, relTarget, anchor string) string {
 	repoBase := ghPrefix + parts[0] + "/" + parts[1] + "/blob/" + parts[3] + "/"
 	sourcePath := parts[4] // e.g. "docs/usage/security/shoot_serviceaccounts.md"
 
-	// Resolve relTarget relative to the directory of sourcePath.
+	// Anchor-only link — target is the source file itself.
 	if relTarget == "" {
-		// Anchor-only link — target is the source file itself.
 		return repoBase + sourcePath + "#" + anchor
 	}
+
+	// Root-relative target ("/docs/...") resolves against the content root, not the
+	// source file's directory — mirroring the validator (relative.go). Without a known
+	// content root we can't map it correctly, so return "" and let the caller fall back
+	// to the plain suggested form rather than emit a wrong URL.
+	if strings.HasPrefix(relTarget, "/") {
+		if contentRel == "" {
+			return ""
+		}
+		resolved := strings.TrimSuffix(contentRel, "/") + "/" + strings.TrimPrefix(relTarget, "/")
+		return repoBase + cleanJoinedPath(resolved) + "#" + anchor
+	}
+
+	// Otherwise resolve relTarget relative to the directory of sourcePath.
 	dir := sourcePath
 	if i := strings.LastIndex(dir, "/"); i >= 0 {
 		dir = dir[:i+1]
 	} else {
 		dir = ""
 	}
-	// Walk the relative path segments.
-	resolved := dir + relTarget
-	// Normalise: collapse any ../ sequences.
-	segs := strings.Split(resolved, "/")
+	return repoBase + cleanJoinedPath(dir+relTarget) + "#" + anchor
+}
+
+// cleanJoinedPath collapses "." and ".." segments and drops empty segments from a
+// slash-separated path, returning the normalised path.
+func cleanJoinedPath(p string) string {
+	segs := strings.Split(p, "/")
 	var clean []string
 	for _, s := range segs {
 		switch s {
@@ -556,5 +600,5 @@ func resolveGitHubAnchorURL(sourceURL, relTarget, anchor string) string {
 			}
 		}
 	}
-	return repoBase + strings.Join(clean, "/") + "#" + anchor
+	return strings.Join(clean, "/")
 }

@@ -70,7 +70,7 @@ func TestCollect(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Collect(root, tc.dirs)
+			got, err := Collect(root, tc.dirs, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestCollect(t *testing.T) {
 	}
 
 	t.Run("symlink dir not followed", func(t *testing.T) {
-		got, err := Collect(root, nil)
+		got, err := Collect(root, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -126,7 +126,7 @@ func TestCollect_SkipsNonContentDirs(t *testing.T) {
 	write("public/index.html")
 	write("docs/.hidden/secret.md") // hidden nested dir
 
-	got, err := Collect(root, nil)
+	got, err := Collect(root, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +138,41 @@ func TestCollect_SkipsNonContentDirs(t *testing.T) {
 	sort.Strings(rel)
 
 	want := []string{"content/real.md", "guide.md"}
+	if !equalSlices(rel, want) {
+		t.Errorf("got %v, want %v", rel, want)
+	}
+}
+
+func TestCollect_SourceIgnore(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel string) {
+		p := filepath.Join(root, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		_ = os.WriteFile(p, []byte(""), 0o644)
+	}
+	write("hugo/content/docs/keep.md")
+	write("hugo/content/blog/2025/07/post.md")     // under an ignored folder
+	write("hugo/content/blog/2024/old.md")         // under an ignored folder
+	write("hugo/content/community/notes.md")       // ignored folder
+	write("hugo/content/skipme.md")                // ignored single file
+
+	ignore := []string{
+		"hugo/content/blog/*",
+		"hugo/content/community/*",
+		"hugo/content/skipme.md",
+	}
+	got, err := Collect(root, nil, ignore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := make([]string, len(got))
+	for i, p := range got {
+		r, _ := filepath.Rel(root, p)
+		rel[i] = filepath.ToSlash(r)
+	}
+	sort.Strings(rel)
+
+	want := []string{"hugo/content/docs/keep.md"}
 	if !equalSlices(rel, want) {
 		t.Errorf("got %v, want %v", rel, want)
 	}

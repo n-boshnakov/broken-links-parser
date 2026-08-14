@@ -248,6 +248,23 @@ func candidateTool() map[string]interface{} {
 	}
 }
 
+// checkCandidate reports whether an AI-suggested URL is a live, specific page.
+// It is a package var so tests can substitute a mock. It uses a stricter check than
+// plain reachability (rejects redirects to a site homepage — a common soft-404).
+var checkCandidate = validator.CheckURLStrict
+
+// looksGeneric reports whether a URL points at a site root / homepage rather than a
+// specific page (empty or "/" path). Such URLs are poor "replacements" for a broken
+// deep link, so they are only chosen as a last resort.
+func looksGeneric(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	p := strings.Trim(u.Path, "/")
+	return p == ""
+}
+
 func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types.ResolutionResult {
 	var input struct {
 		Candidates []aiCandidate `json:"candidates"`
@@ -262,8 +279,10 @@ func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types
 
 	// Build the full list of considered candidates (best first) so the report can
 	// show alternatives and the model's reasoning, not just the winning URL.
+	// Selection is two-pass: prefer the first reachable *specific* page; fall back to
+	// a reachable homepage only if nothing better exists.
 	var considered []types.Candidate
-	var chosen *types.Candidate
+	var chosen, genericFallback *types.Candidate
 	for _, c := range input.Candidates {
 		if c.URL == "" {
 			continue
@@ -276,22 +295,36 @@ func pickBestCandidate(result types.ValidationResult, raw json.RawMessage) types
 		if strings.Contains(c.URL, "web.archive.org") || strings.Contains(c.URL, "archive.org/web") {
 			continue
 		}
-		reachable := validator.CheckURL(c.URL)
+		reachable := checkCandidate(c.URL)
+		generic := looksGeneric(c.URL)
+		reasoning := c.Reasoning
+		if generic {
+			reasoning += " [generic homepage — used only as last resort]"
+		}
 		cand := types.Candidate{
 			URL:             c.URL,
 			Strategy:        types.StrategyAI,
-			Reasoning:       c.Reasoning,
+			Reasoning:       reasoning,
 			ConfidenceScore: c.Confidence,
 			Reachable:       reachable,
 		}
 		considered = append(considered, cand)
-		// Choose the first reachable candidate in confidence order.
-		if reachable && chosen == nil {
-			c := cand // capture
-			chosen = &c
+		if reachable {
+			idx := len(considered) - 1
+			if generic {
+				if genericFallback == nil {
+					genericFallback = &considered[idx]
+				}
+			} else if chosen == nil {
+				chosen = &considered[idx]
+			}
 		}
 	}
 
+	// Prefer a specific page; degrade to a reachable homepage only if that's all there is.
+	if chosen == nil {
+		chosen = genericFallback
+	}
 	if chosen == nil {
 		return types.ResolutionResult{
 			ValidationResult: result,

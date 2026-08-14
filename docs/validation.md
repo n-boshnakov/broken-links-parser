@@ -150,7 +150,7 @@ For distributed documentation spanning multiple repos, use a single sectioned ig
 Format:
 
 ```
-# Lines before the first section are global — applied to all links
+# Lines before the first section are global — applied to all link URLs
 mailto:*
 
 # [/absolute/path/to/repo] starts a repo-specific section
@@ -158,13 +158,31 @@ mailto:*
 /dev-setup/*
 /example-only-path/*
 
-[/Users/you/Documents/GitHub/kubernetes/kubernetes]
-/staging/*
+[/Users/you/Documents/GitHub/kubernetes/documentation]
+# bare lines match link URLs (link is still collected, just marked IGNORED)
+/website/documentation/landscapes/*
+# "source:" lines skip scanning source files/folders entirely (no links collected).
+# Globs are written relative to the repo root.
+source: hugo/content/community/reviews/*
+source: hugo/content/community/mail/*
+
+# [sources] is a global source-skip section (globs relative to --root)
+[sources]
+generated/*
 ```
 
-- **Global patterns** (before any `[...]` section) apply to all links regardless of source
-- **Repo-specific patterns** apply only to links sourced from that repo's local clone
-- Paths must be absolute — relative paths would break if the file moves
+- **Global patterns** (before any `[...]` section) match all link URLs regardless of source
+- **Repo-specific bare patterns** match link URLs, but only for links sourced from that repo
+- **`source: <glob>` lines** (inside a repo section) skip scanning the matching source
+  files/folders entirely — no links are collected from them. This differs from URL
+  patterns, which still collect and validate the link and merely mark it IGNORED. Globs
+  are written relative to the repo root and take effect when `--root` is on that repo's
+  path.
+- **`[sources]` section** is the global equivalent of `source:` lines — globs relative to
+  `--root`, applied to every scan.
+- Repo paths must be absolute — relative paths would break if the file moves.
+- Source-skip (both `source:` and `[sources]`) applies to the primary scanned tree only,
+  not to docforge-sourced files.
 
 Pass it with `--scoped-ignore-file <path>`. Note that this is a different, sectioned format from the flat root `.linkignore` that is auto-loaded — although the file may be named `.linkignore` too. When working with Gardener docs, keeping this sectioned file in the tool's own repo is the recommended setup.
 

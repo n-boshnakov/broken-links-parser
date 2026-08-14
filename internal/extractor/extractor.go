@@ -44,10 +44,10 @@ func ExtractFile(path string) ([]types.Link, error) {
 	return deduplicateLinks(links), nil
 }
 
-// Extract collects all .md and .html files under root (optionally scoped to dirs)
-// and returns every link found across all files.
-func Extract(root string, dirs []string) ([]types.Link, error) {
-	files, err := Collect(root, dirs)
+// Extract collects all .md and .html files under root (optionally scoped to dirs,
+// and excluding sourceIgnore globs) and returns every link found across all files.
+func Extract(root string, dirs, sourceIgnore []string) ([]types.Link, error) {
+	files, err := Collect(root, dirs, sourceIgnore)
 	if err != nil {
 		return nil, fmt.Errorf("collect: %w", err)
 	}
