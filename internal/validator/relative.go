@@ -167,14 +167,24 @@ func ValidateRelative(link types.Link, patterns []string, repoRoot, rootRelative
 				return types.ValidationResult{Link: link, Valid: true}
 			}
 		}
-		// No exact match — find the closest anchor as a suggestion.
+		// No exact match — find the closest anchor as a suggestion. Carry the resolved
+		// target file (relative to repoRoot, slash form) so the report can build a
+		// clickable URL to the real file rather than the extensionless route. Empty when
+		// the anchor is in the source file itself, or when the target isn't under repoRoot.
 		suggested, score := closestAnchorScored(normFragment, anchors)
+		var targetRel string
+		if repoRoot != "" && targetPath != link.SourceFile {
+			if rel, err := filepath.Rel(repoRoot, targetPath); err == nil && !strings.HasPrefix(rel, "..") {
+				targetRel = filepath.ToSlash(rel)
+			}
+		}
 		return types.ValidationResult{
 			Link:                 link,
 			Valid:                false,
 			Reason:               types.ReasonAnchorNotFound,
 			SuggestedAnchor:      suggested,
 			SuggestedAnchorScore: score,
+			SuggestedTargetPath:  targetRel,
 		}
 	}
 

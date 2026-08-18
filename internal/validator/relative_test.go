@@ -161,6 +161,41 @@ func TestValidateRelative_RouteFallback(t *testing.T) {
 	}
 }
 
+func TestValidateRelative_SuggestedTargetPath(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "blog", "post.md")
+	_ = os.MkdirAll(filepath.Dir(src), 0o755)
+	_ = os.WriteFile(src, []byte("# Post\n"), 0o644)
+	// Rendered route /docs/usage/ → the real file docs/usage.md.
+	_ = os.MkdirAll(filepath.Join(base, "docs"), 0o755)
+	_ = os.WriteFile(filepath.Join(base, "docs", "usage.md"), []byte("# Usage\n## WorkerConfig\n"), 0o644)
+
+	t.Run("route-style anchor miss carries resolved .md file path", func(t *testing.T) {
+		link := types.Link{URL: "/docs/usage/#backupbucketconfig", Type: types.LinkTypeRelative, SourceFile: src}
+		res := ValidateRelative(link, nil, base, base)
+		if res.Reason != types.ReasonAnchorNotFound {
+			t.Fatalf("Reason = %q, want ANCHOR_NOT_FOUND", res.Reason)
+		}
+		if res.SuggestedTargetPath != "docs/usage.md" {
+			t.Errorf("SuggestedTargetPath = %q, want docs/usage.md", res.SuggestedTargetPath)
+		}
+	})
+
+	t.Run("same-file anchor miss leaves target path empty", func(t *testing.T) {
+		// Anchor into the source file itself → no separate target file to point at.
+		withHeadings := filepath.Join(base, "self.md")
+		_ = os.WriteFile(withHeadings, []byte("# Self\n## Real Heading\n"), 0o644)
+		link := types.Link{URL: "#nonexistent-heading", Type: types.LinkTypeAnchor, SourceFile: withHeadings}
+		res := ValidateRelative(link, nil, base, base)
+		if res.Reason != types.ReasonAnchorNotFound {
+			t.Fatalf("Reason = %q, want ANCHOR_NOT_FOUND", res.Reason)
+		}
+		if res.SuggestedTargetPath != "" {
+			t.Errorf("SuggestedTargetPath = %q, want empty for same-file anchor", res.SuggestedTargetPath)
+		}
+	})
+}
+
 func TestValidateRelative_DirectoryTarget(t *testing.T) {
 	repo := t.TempDir()
 	// A source-code package directory containing no markdown/index — a link to it

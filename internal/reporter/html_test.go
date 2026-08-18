@@ -71,3 +71,43 @@ func TestResolveGitHubAnchorURL(t *testing.T) {
 		})
 	}
 }
+
+func TestRepoBlobURL(t *testing.T) {
+	const src = "https://github.com/gardener/documentation/blob/master/hugo/content/blog/2025/07/post.md"
+	cases := []struct {
+		name        string
+		sourceURL   string
+		repoRelPath string
+		anchor      string
+		want        string
+	}{
+		{
+			name:        "builds URL to the real .md file (not the extensionless route)",
+			sourceURL:   src,
+			repoRelPath: "hugo/content/docs/extensions/provider-aws/usage.md",
+			anchor:      "workerconfig",
+			want:        "https://github.com/gardener/documentation/blob/master/hugo/content/docs/extensions/provider-aws/usage.md#workerconfig",
+		},
+		{
+			name:        "no anchor",
+			sourceURL:   src,
+			repoRelPath: "hugo/content/docs/x.md",
+			anchor:      "",
+			want:        "https://github.com/gardener/documentation/blob/master/hugo/content/docs/x.md",
+		},
+		{
+			name:        "non-GitHub source returns empty",
+			sourceURL:   "https://example.com/x.md",
+			repoRelPath: "docs/x.md",
+			anchor:      "y",
+			want:        "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := repoBlobURL(tc.sourceURL, tc.repoRelPath, tc.anchor); got != tc.want {
+				t.Errorf("repoBlobURL(...) =\n  %q\nwant\n  %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -442,16 +442,26 @@ func WriteHTML(outPath, root, rootRelativeBase string, r *pipeline.Result) error
 				}
 				suggested := u + "#" + v.SuggestedAnchor
 				// If we have a GitHub source URL, resolve the relative suggestion to an
-				// absolute GitHub URL so the user can click through directly. Root-relative
-				// ("/…") targets need the content root, which only applies to the primary
-				// tree — pass contentRel only for primary-repo rows (empty for docforge).
+				// absolute GitHub URL so the user can click through directly.
 				if strings.HasPrefix(sourceURL, "https://github.com/") {
-					cr := contentRel
-					if l.SourceRepo != "" {
-						cr = ""
-					}
-					if abs := resolveGitHubAnchorURL(sourceURL, u, v.SuggestedAnchor, cr); abs != "" {
-						suggested = abs
+					if v.SuggestedTargetPath != "" {
+						// The validator already resolved the route to a real file (e.g.
+						// ".../usage.md"); build the URL from that so we don't drop the
+						// extension. SuggestedTargetPath is relative to the repo root.
+						if abs := repoBlobURL(sourceURL, v.SuggestedTargetPath, v.SuggestedAnchor); abs != "" {
+							suggested = abs
+						}
+					} else {
+						// Fall back to re-deriving from the (relative/root-relative) link.
+						// Root-relative ("/…") targets need the content root, which only
+						// applies to the primary tree — pass contentRel only for primary rows.
+						cr := contentRel
+						if l.SourceRepo != "" {
+							cr = ""
+						}
+						if abs := resolveGitHubAnchorURL(sourceURL, u, v.SuggestedAnchor, cr); abs != "" {
+							suggested = abs
+						}
 					}
 				}
 				synth := types.ResolutionResult{
@@ -523,6 +533,31 @@ func getDefaultBranch(repoRoot string) string {
 		return "main"
 	}
 	return "master"
+}
+
+// repoBlobURL builds an absolute GitHub blob URL for a repo-relative file path and
+// anchor, reusing the owner/repo/branch of sourceURL (a GitHub blob URL of any file in
+// the same repo). repoRelPath is relative to the repo root (e.g. "hugo/content/docs/x.md").
+// Returns "" if sourceURL is not a recognised GitHub blob URL.
+func repoBlobURL(sourceURL, repoRelPath, anchor string) string {
+	base := sourceURL
+	if i := strings.Index(base, "#"); i >= 0 {
+		base = base[:i]
+	}
+	const ghPrefix = "https://github.com/"
+	if !strings.HasPrefix(base, ghPrefix) {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(base, ghPrefix), "/", 5)
+	if len(parts) < 5 || parts[2] != "blob" {
+		return ""
+	}
+	repoBase := ghPrefix + parts[0] + "/" + parts[1] + "/blob/" + parts[3] + "/"
+	url := repoBase + cleanJoinedPath(repoRelPath)
+	if anchor != "" {
+		url += "#" + anchor
+	}
+	return url
 }
 
 // resolveGitHubAnchorURL builds an absolute GitHub URL for an anchor suggestion.
