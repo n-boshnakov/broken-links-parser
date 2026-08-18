@@ -101,6 +101,7 @@ type ValidationResult struct {
 	NotAssembled         bool    // true when link is valid on disk but target not in docforge manifest (--docforge-strict only)
 	SuggestedAnchor      string  // closest matching anchor when Reason is ANCHOR_NOT_FOUND; empty otherwise
 	SuggestedAnchorScore float64 // 0.0–1.0 confidence of the suggested anchor; 0 when none
+	SuggestedTargetPath  string  // resolved on-disk file the anchor lives in, relative to the scan root (slash form); empty when the target is the source file itself
 }
 
 // IsBroken reports whether a result should count as a broken link. Valid links,

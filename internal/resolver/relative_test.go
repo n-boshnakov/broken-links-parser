@@ -125,6 +125,36 @@ func TestResolveRelative_TransitiveRename(t *testing.T) {
 	}
 }
 
+func TestRunGitLog_TerminalPathMustExistAtHEAD(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// a.md → b.md (rename), then b.md is deleted. Following the chain reaches a path
+	// that no longer exists at HEAD; the resolver must be honest (report the deletion)
+	// rather than emit a confident rename to the nonexistent b.md.
+	_ = os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\n"), 0o644)
+	commit(t, dir, "add a.md")
+	if out, err := exec.Command("git", "-C", dir, "mv", "a.md", "b.md").CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v\n%s", err, out)
+	}
+	commit(t, dir, "rename a.md to b.md")
+	if out, err := exec.Command("git", "-C", dir, "rm", "b.md").CombinedOutput(); err != nil {
+		t.Fatalf("git rm: %v\n%s", err, out)
+	}
+	commit(t, dir, "delete b.md")
+
+	src := filepath.Join(dir, "s.md")
+	_ = os.WriteFile(src, []byte(""), 0o644)
+	res := ResolveRelative(
+		types.ValidationResult{Link: types.Link{URL: "a.md", Type: types.LinkTypeRelative, SourceFile: src}, Reason: types.ReasonFileNotFound},
+		dir, true, NewGitCache(),
+	)
+	// Must not be a confident in-place rename to a path that isn't at HEAD.
+	if res.FixedURL != "" && !res.Deleted && strings.HasSuffix(res.FixedURL, "b.md") {
+		t.Errorf("emitted a confident rename to nonexistent b.md: %q", res.FixedURL)
+	}
+}
+
 func TestResolveRelative_RenameChainEndingInDeletion(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)

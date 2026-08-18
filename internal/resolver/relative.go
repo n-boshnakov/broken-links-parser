@@ -94,8 +94,10 @@ func runGitLog(repoRoot, path string) (gitLogResult, error) {
 			if hop == 0 {
 				return gitLogResult{}, nil // original path was modified/added, not moved
 			}
-			// We followed at least one rename; `current` is the terminal path.
-			return gitLogResult{newPath: current}, nil
+			// We followed at least one rename; `current` is the terminal path — but only
+			// trust it if it actually exists at HEAD (a big reorg can leave the chain on a
+			// path that was itself deleted/moved without a detectable rename).
+			return renameIfExists(repoRoot, current), nil
 		}
 		if deletionSHA != "" {
 			return gitLogResult{deletionSHA: deletionSHA}, nil
@@ -106,11 +108,21 @@ func runGitLog(repoRoot, path string) (gitLogResult, error) {
 			return gitLogResult{newPath: current}, nil
 		}
 	}
-	// Hit the hop cap — return whatever terminal path we reached (best effort).
+	// Hit the hop cap — return the terminal path only if it exists at HEAD.
 	if current != path {
-		return gitLogResult{newPath: current}, nil
+		return renameIfExists(repoRoot, current), nil
 	}
 	return gitLogResult{}, nil
+}
+
+// renameIfExists returns a rename result pointing at path only when it exists at HEAD;
+// otherwise an empty result, so a chain that terminates on a stale/deleted path yields
+// "no reliable rename" rather than a confident link to a nonexistent file.
+func renameIfExists(repoRoot, path string) gitLogResult {
+	if pathExistsAtHEAD(repoRoot, path) {
+		return gitLogResult{newPath: path}
+	}
+	return gitLogResult{}
 }
 
 // renameOrDeleteOnce inspects the most recent commit touching path and reports a
