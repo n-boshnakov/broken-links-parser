@@ -2,8 +2,11 @@ package resolver
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
@@ -228,4 +231,68 @@ func TestPickBestCandidate_GenericHandling(t *testing.T) {
 			t.Errorf("FixedURL = %q, want the homepage fallback", res.FixedURL)
 		}
 	})
+}
+
+// TestResolve_AIAuthWarnsOnce is the regression guard for the top-level AI-key
+// warning: when the AI endpoint rejects the key (401), Resolve must emit exactly one
+// run-level warning to stderr even across multiple affected links — not one per link,
+// and not silence.
+func TestResolve_AIAuthWarnsOnce(t *testing.T) {
+	// AI endpoint that always rejects the key.
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer aiSrv.Close()
+
+	mkBroken := func(u string) types.ValidationResult {
+		return types.ValidationResult{
+			Link:       types.Link{URL: u, Type: types.LinkTypeAbsolute},
+			Valid:      false,
+			Reason:     types.ReasonHTTPError,
+			StatusCode: 404,
+		}
+	}
+	results := []types.ValidationResult{
+		mkBroken("https://old.example.com/one"),
+		mkBroken("https://old.example.com/two"),
+	}
+	opts := ResolveOptions{
+		EnableAI: true,
+		AI:       AIConfig{APIKey: "bad-key", Model: defaultModel, BaseURL: aiSrv.URL},
+	}
+
+	stderr := captureStderr(t, func() {
+		out := Resolve(results, opts)
+		// Each affected link still carries the per-row auth reason.
+		for _, r := range out {
+			if r.UnresolvedReason != types.UnresolvedAIAuthError {
+				t.Errorf("link %s: UnresolvedReason = %q, want AI_AUTH_ERROR", r.Link.URL, r.UnresolvedReason)
+			}
+		}
+	})
+
+	if n := strings.Count(stderr, "AI resolution key was rejected"); n != 1 {
+		t.Errorf("AI-key warning emitted %d times, want exactly 1\nstderr:\n%s", n, stderr)
+	}
+}
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns what was
+// written. It restores the original stderr before returning.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stderr = orig
+	return <-done
 }

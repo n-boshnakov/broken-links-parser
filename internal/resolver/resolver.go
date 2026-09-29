@@ -1,7 +1,9 @@
 package resolver
 
 import (
+	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/n-boshnakov/broken-links-parser/internal/types"
@@ -31,6 +33,7 @@ func Resolve(results []types.ValidationResult, opts ResolveOptions) []types.Reso
 	parentCache := make(map[string]bool)
 	resolvedByURL := make(map[string]types.ResolutionResult) // per-run resolution cache
 	out := make([]types.ResolutionResult, len(results))
+	aiAuthWarned := false // emit the AI-key warning at most once per run
 	for i, r := range results {
 		if r.Valid || r.Reason == types.ReasonIgnored {
 			out[i] = types.ResolutionResult{ValidationResult: r}
@@ -44,6 +47,15 @@ func Resolve(results []types.ValidationResult, opts ResolveOptions) []types.Reso
 			continue
 		}
 		res := resolveOne(r, opts, cache, cloneCache, parentCache)
+		// The AI key was rejected. This is a run-level configuration problem, not a
+		// property of this one link, so surface it once at the top level — otherwise it
+		// is only visible buried in each affected link's per-row UnresolvedReason, and a
+		// whole run can silently skip AI resolution without the user noticing.
+		if !aiAuthWarned && res.UnresolvedReason == types.UnresolvedAIAuthError {
+			fmt.Fprintln(os.Stderr, "Warning: AI resolution key was rejected (check AI_API_KEY — it may be missing, invalid, or expired). "+
+				"AI resolution is effectively disabled for this run; remaining external links will not be resolved via AI.")
+			aiAuthWarned = true
+		}
 		resolvedByURL[r.Link.URL] = res
 		out[i] = res
 	}
