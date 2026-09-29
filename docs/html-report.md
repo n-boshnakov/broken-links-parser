@@ -31,7 +31,7 @@ Adds **Fixed Link** and **Strategy** columns.
 - Deleted files show `"Deleted in commit: <url>"` linking to the deletion commit
 - Wayback fallbacks show `"No live replacement found — see archived version: <url>"`
 - AI suggestions show a Yellow `AI (low confidence)` or `Wayback + AI` badge
-- Anchor suggestions show a Grey `Closest match` badge — the nearest heading when `ANCHOR_NOT_FOUND`
+- Anchor suggestions show a Grey `Closest match` badge — the nearest heading when `ANCHOR_NOT_FOUND`. Weak suggestions (below the confidence gate) show a `Possible match` badge and are labelled `"Possible match (low confidence): …"`
 - Unresolved links show an italicised reason explaining why no fix was found
 
 ```sh
@@ -72,10 +72,20 @@ Toggle one or more link types to show only those rows:
 
 | Chip | Shows |
 |------|-------|
-| `Has fix` | Broken links where a replacement URL was found |
+| `Has fix` | Broken links where a confident replacement URL was found |
+| `Possible match` | Broken links with a low-confidence anchor suggestion — a clickable hint, not a trusted fix (see [Confidence gate](#confidence-gate)) |
 | `Unresolved` | Broken links where no replacement could be found |
 | `Deleted` | Links where the target file was deleted; points to the deletion commit |
 | `Wayback fallback` | Links where no live replacement was found; archive URL provided |
+
+### Confidence gate
+
+Fuzzy anchor suggestions carry a similarity score. Only suggestions at or above the
+confidence floor (0.7) are presented as a confident fix (`Has fix`); weaker matches are
+shown as a **`Possible match (low confidence)`** hint instead — still clickable, but
+excluded from the fixed set, because a confident-wrong fix is worse than an honest
+"maybe". See [validation.md](validation.md#anchor-validation) for how the score is
+computed.
 
 ### Text search
 
@@ -103,7 +113,8 @@ Click any column header to sort that column ascending. Click again to reverse. O
 | `Not in manifest` | Amber | Valid on disk but not assembled |
 | `git-history` / `local-clone` / `github-api` | Blue | Programmatic fix found |
 | `AI (low confidence)` / `Wayback + AI` | Yellow | AI-assisted suggestion |
-| `Closest match` | Grey | Nearest heading anchor suggestion for `ANCHOR_NOT_FOUND` links |
+| `Closest match` | Grey | Nearest heading anchor suggestion for `ANCHOR_NOT_FOUND` links, at or above the confidence gate |
+| `Possible match` | Grey | Below-gate anchor suggestion — a low-confidence hint, excluded from the fixed set |
 
 ## Source file column
 

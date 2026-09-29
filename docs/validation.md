@@ -38,7 +38,15 @@ For links with a `#fragment`, the validator extracts all headings from the targe
 - Duplicate headings generate numbered variants: `foo`, `foo-1`, `foo-2`
 - GitHub line-range anchors (`#L48-L55`) always treated as valid
 
-When `ANCHOR_NOT_FOUND`, the report shows the closest matching anchor as a clickable suggestion.
+When `ANCHOR_NOT_FOUND`, the report shows the closest matching anchor as a clickable
+suggestion. Each candidate is scored for similarity across several passes (exact-prefix,
+substring coverage, reverse containment, Levenshtein edit distance, and word-token
+overlap). The score gates how the suggestion is presented in the report: a strong match
+(≥ 0.7) appears as a confident `Closest match` fix, while a weak one (a short fragment
+buried in a long heading, a far edit distance, or a suggestion that drops the fragment's
+distinctive trailing token) is demoted to a low-confidence `Possible match` hint — still
+clickable, but not counted as a fix. See
+[Confidence gate](html-report.md#confidence-gate).
 
 ## Root-relative links
 

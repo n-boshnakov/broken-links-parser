@@ -54,14 +54,150 @@ func TestBuildFileIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if index["guide.md"] != "docs/guide.md" {
-		t.Errorf("guide.md → %q, want docs/guide.md", index["guide.md"])
+	if got := index["guide.md"]; len(got) != 1 || got[0] != "docs/guide.md" {
+		t.Errorf("guide.md → %v, want [docs/guide.md]", got)
 	}
-	if index["index.html"] != "website/index.html" {
-		t.Errorf("index.html → %q, want website/index.html", index["index.html"])
+	if got := index["index.html"]; len(got) != 1 || got[0] != "website/index.html" {
+		t.Errorf("index.html → %v, want [website/index.html]", got)
 	}
 	if _, ok := index["docs"]; ok {
 		t.Error("tree entries should not be in the index")
+	}
+}
+
+func TestBuildFileIndex_Collision(t *testing.T) {
+	// Two blobs share the basename reconciler.go — both must be kept so the
+	// caller can detect the collision (the first-wins bug discarded one).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"tree": []map[string]string{
+				{"path": "extensions/pkg/controller/worker/reconciler.go", "type": "blob"},
+				{"path": "extensions/pkg/controller/backupbucket/reconciler.go", "type": "blob"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	index, err := buildFileIndexFromURL(srv.Client(), srv.URL+"/repos/org/repo/git/trees/HEAD?recursive=1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := index["reconciler.go"]
+	if len(got) != 2 {
+		t.Fatalf("reconciler.go → %v, want both paths kept (len 2)", got)
+	}
+}
+
+func TestClosestByDirProximity(t *testing.T) {
+	orig := "extensions/pkg/controller/worker/reconciler.go"
+	tests := []struct {
+		name       string
+		candidates []string
+		want       string
+		wantOK     bool
+	}{
+		{
+			name: "unique nearest directory wins",
+			candidates: []string{
+				"extensions/pkg/controller/worker/sub/reconciler.go", // shares worker/ prefix
+				"extensions/pkg/controller/backupbucket/reconciler.go",
+			},
+			want:   "extensions/pkg/controller/worker/sub/reconciler.go",
+			wantOK: true,
+		},
+		{
+			name: "tie on prefix length is ambiguous",
+			candidates: []string{
+				"extensions/pkg/controller/backupbucket/reconciler.go",
+				"extensions/pkg/controller/infrastructure/reconciler.go",
+			},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:       "no candidates",
+			candidates: nil,
+			want:       "",
+			wantOK:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := closestByDirProximity(orig, tt.candidates)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("closestByDirProximity() = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestResolveViaGitHubAPI_AmbiguousCollision(t *testing.T) {
+	// Two same-basename files at equal directory distance and no rename history →
+	// must report AMBIGUOUS with no FixedURL, never a coin-flip fix.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/commits") {
+			// No commit history available to disambiguate.
+			_ = json.NewEncoder(w).Encode([]map[string]string{})
+			return
+		}
+		resp := map[string]interface{}{
+			"tree": []map[string]string{
+				{"path": "a/x/reconciler.go", "type": "blob"},
+				{"path": "b/y/reconciler.go", "type": "blob"},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	result := types.ValidationResult{
+		Link:  types.Link{URL: "https://github.com/o/r/blob/master/c/z/reconciler.go", Type: types.LinkTypeAbsolute},
+		Valid: false, Reason: types.ReasonHTTPError,
+	}
+	res := resolveViaGitHubAPIWithBase(result, "", srv.URL)
+	if res.FixedURL != "" {
+		t.Errorf("expected no fix on ambiguous tie, got %q", res.FixedURL)
+	}
+	if res.UnresolvedReason != types.UnresolvedAmbiguous {
+		t.Errorf("UnresolvedReason = %q, want AMBIGUOUS", res.UnresolvedReason)
+	}
+}
+
+func TestResolveViaGitHubAPI_ProximityTiebreak(t *testing.T) {
+	// Two same-basename files but one shares a longer directory prefix with the
+	// original → offered as a fix at reduced 0.5 confidence.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/commits") {
+			_ = json.NewEncoder(w).Encode([]map[string]string{}) // no rename history
+			return
+		}
+		resp := map[string]interface{}{
+			"tree": []map[string]string{
+				{"path": "docs/usage/networking/reconciler.go", "type": "blob"},
+				{"path": "pkg/other/reconciler.go", "type": "blob"},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	result := types.ValidationResult{
+		Link:  types.Link{URL: "https://github.com/o/r/blob/master/docs/usage/old/reconciler.go", Type: types.LinkTypeAbsolute},
+		Valid: false, Reason: types.ReasonHTTPError,
+	}
+	res := resolveViaGitHubAPIWithBase(result, "", srv.URL)
+	if res.FixedURL == "" {
+		t.Fatalf("expected a proximity-tiebreak fix, got unresolved (%s)", res.UnresolvedReason)
+	}
+	if !strings.Contains(res.FixedURL, "docs/usage/networking/reconciler.go") {
+		t.Errorf("expected the directory-nearest candidate, got %q", res.FixedURL)
+	}
+	if res.ConfidenceScore != 0.5 {
+		t.Errorf("proximity-tiebreak confidence = %v, want 0.5", res.ConfidenceScore)
 	}
 }
 
@@ -196,7 +332,7 @@ func TestFollowRenameChain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	index := map[string]string{"c.md": "docs/c.md"} // terminal path present at HEAD
+	index := map[string][]string{"c.md": {"docs/c.md"}} // terminal path present at HEAD
 	got := followRenameChain(srv.Client(), srv.URL, "o", "r", index, "b.md", "")
 	if got != "c.md" {
 		t.Errorf("followRenameChain = %q, want c.md (terminal path)", got)

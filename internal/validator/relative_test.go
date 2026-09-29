@@ -248,10 +248,16 @@ func TestClosestAnchorScored(t *testing.T) {
 		maxScore   float64
 	}{
 		{"prefix match", "etcd-components-webhook", []string{"etcd-components-webhook-deprecated", "other"}, "etcd-components-webhook-deprecated", 0.9, 0.9},
-		{"reverse-substring wins over reverse-prefix (candidate contained in fragment)", "networkpolicy-controller-registrar", []string{"networkpolicy-controller", "other"}, "networkpolicy-controller", 0.6, 0.6},
-		{"reverse-substring match", "use-case-3-monitoring-backup-health", []string{"monitoring-backup-health", "x"}, "monitoring-backup-health", 0.6, 0.6},
+		{"reverse-substring wins over reverse-prefix (candidate contained in fragment)", "networkpolicy-controller-registrar", []string{"networkpolicy-controller", "other"}, "networkpolicy-controller", 0.6, 0.7},
+		{"reverse-substring match", "use-case-3-monitoring-backup-health", []string{"monitoring-backup-health", "x"}, "monitoring-backup-health", 0.7, 0.8},
 		{"token-overlap match", "gardener-provided-credentials", []string{"shoot-credentials-gardener-managed", "unrelated"}, "shoot-credentials-gardener-managed", 0.7, 0.9},
 		{"no match", "totally-unrelated-xyz", []string{"something-else-entirely"}, "", 0, 0},
+		// Quality regressions (Phase 2): weak substring / far-edit matches must score
+		// below the report fix gate (0.7) so they render as hints, not confident fixes.
+		{"short fragment buried in long candidate is weak", "garden", []string{"gardener-discovery-server", "other"}, "gardener-discovery-server", 0.5, 0.6},
+		{"near-identical anchor is a strong Levenshtein match", "installation-step", []string{"installation-steps", "unrelated"}, "installation-steps", 0.8, 0.9},
+		{"far-edit Levenshtein match is capped low", "operatorconfiguration", []string{"serverconfiguration", "unrelated-heading"}, "serverconfiguration", 0.3, 0.6},
+		{"dropped distinctive trailing token is penalised", "extensionsgardenercloudv1alpha1-cluster", []string{"extensionsgardenercloudv1alpha1", "other"}, "extensionsgardenercloudv1alpha1", 0.5, 0.7},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

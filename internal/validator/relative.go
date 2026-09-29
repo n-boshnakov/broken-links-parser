@@ -281,7 +281,10 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 
 	// Pass 2: fragment is a substring of a candidate
 	// (e.g. #custom-domains → #using-a-custom-domains-issuer).
-	// Pick the shortest candidate that contains the fragment.
+	// Pick the shortest candidate that contains the fragment. The score reflects how
+	// much of the candidate the fragment actually covers: a fragment that is nearly
+	// the whole candidate is a strong match, while a short fragment buried in a long
+	// candidate (e.g. #garden inside #gardener-discovery-server) is weak.
 	subBest := ""
 	for _, c := range candidates {
 		if strings.Contains(c, fragment) {
@@ -291,7 +294,7 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 		}
 	}
 	if subBest != "" {
-		return subBest, 0.6
+		return subBest, substringScore(fragment, subBest)
 	}
 
 	// Pass 3: candidate is a substring of fragment
@@ -306,7 +309,13 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 		}
 	}
 	if revSubBest != "" {
-		return revSubBest, 0.6
+		score := substringScore(fragment, revSubBest)
+		// Penalise dropping the fragment's distinctive trailing token (e.g. losing
+		// ".Cluster" from an API-type anchor) — the candidate names a broader section.
+		if droppedTrailingToken(fragment, revSubBest) {
+			score *= 0.85
+		}
+		return revSubBest, score
 	}
 
 	// Pass 4: candidate is a prefix of fragment
@@ -320,7 +329,13 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 		}
 	}
 	if revPrefixBest != "" {
-		return revPrefixBest, 0.9
+		score := 0.9
+		// A prefix match that drops the fragment's distinctive trailing token points
+		// at a broader parent section — down-weight it below a full-strength match.
+		if droppedTrailingToken(fragment, revPrefixBest) {
+			score *= 0.85
+		}
+		return revPrefixBest, score
 	}
 
 	// Pass 5: Levenshtein distance.
@@ -339,13 +354,20 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 		threshold = 12
 	}
 	if bestDist <= threshold && best != "" {
-		// Closer edit distance → higher score, scaled within the pass's band.
-		score := 0.4 + 0.4*(1-float64(bestDist)/float64(threshold))
-		if score < 0.3 {
-			score = 0.3
-		}
-		if score > 0.7 {
-			score = 0.7
+		// A near-identical anchor (typo, singular/plural) is a strong match; a larger
+		// edit distance is a weak guess and must stay below the report's fix gate so it
+		// renders as a hint rather than a confident fix.
+		var score float64
+		if bestDist <= 2 {
+			score = 0.85
+		} else {
+			score = 0.4 + 0.4*(1-float64(bestDist)/float64(threshold))
+			if score < 0.3 {
+				score = 0.3
+			}
+			if score > 0.6 {
+				score = 0.6
+			}
 		}
 		return best, score
 	}
@@ -438,4 +460,38 @@ func tokenOverlap(a, b []string) int {
 		}
 	}
 	return n
+}
+
+// substringScore scores a containment match (one of fragment/candidate contains the
+// other) by how much of the longer string the shorter one covers. A near-equal length
+// ratio is a strong match; a short string buried in a long one is weak. The band
+// 0.45–0.9 keeps high-coverage matches above the report fix gate (0.7) and pushes
+// low-coverage ones (e.g. "garden" in "gardener-discovery-server") below it.
+func substringScore(fragment, candidate string) float64 {
+	shorter, longer := len(fragment), len(candidate)
+	if shorter > longer {
+		shorter, longer = longer, shorter
+	}
+	if longer == 0 {
+		return 0.45
+	}
+	ratio := float64(shorter) / float64(longer)
+	return 0.45 + 0.45*ratio
+}
+
+// droppedTrailingToken reports whether candidate is fragment with its last
+// hyphen-delimited token removed — i.e. the suggestion loses the fragment's most
+// distinctive trailing qualifier and names a broader section instead.
+func droppedTrailingToken(fragment, candidate string) bool {
+	ft := filterEmpty(strings.Split(fragment, "-"))
+	ct := filterEmpty(strings.Split(candidate, "-"))
+	if len(ft) < 2 || len(ct) != len(ft)-1 {
+		return false
+	}
+	for i := range ct {
+		if ct[i] != ft[i] {
+			return false
+		}
+	}
+	return true
 }

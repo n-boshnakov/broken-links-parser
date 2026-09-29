@@ -141,8 +141,10 @@ func ResolveViaLocalClone(result types.ValidationResult, reposDir, cacheDir stri
 }
 
 // buildFileIndex fetches the Git Trees API for owner/repo at the given ref and
-// returns a map of basename → full tree path for all blob entries.
-func buildFileIndex(client *http.Client, apiBase, owner, repo, ref, token string) (map[string]string, error) {
+// returns a map of basename → all full tree paths for blob entries with that
+// basename. A basename can map to multiple paths (e.g. several reconciler.go),
+// so callers must handle collisions rather than assume a single path.
+func buildFileIndex(client *http.Client, apiBase, owner, repo, ref, token string) (map[string][]string, error) {
 	if ref == "" {
 		ref = "HEAD"
 	}
@@ -158,7 +160,7 @@ type apiError struct {
 func (e *apiError) Error() string { return fmt.Sprintf("github API returned %d", e.status) }
 
 // buildFileIndexFromURL is the testable core of buildFileIndex.
-func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[string]string, error) {
+func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[string][]string, error) {
 	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
@@ -200,14 +202,13 @@ func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[strin
 		fmt.Fprintf(os.Stderr, "github: tree listing truncated for %s — some paths may be missing from the index\n", apiURL)
 	}
 
-	index := make(map[string]string, len(body.Tree))
+	index := make(map[string][]string, len(body.Tree))
 	for _, entry := range body.Tree {
 		if entry.Type == "blob" {
 			base := filepath.Base(entry.Path)
-			// Keep first occurrence to avoid clobbering with a later duplicate name.
-			if _, exists := index[base]; !exists {
-				index[base] = entry.Path
-			}
+			// Keep every occurrence so genuine same-basename collisions can be
+			// detected and disambiguated by the caller.
+			index[base] = append(index[base], entry.Path)
 		}
 	}
 	return index, nil
@@ -215,9 +216,9 @@ func buildFileIndexFromURL(client *http.Client, apiURL, token string) (map[strin
 
 // treeIndexWithFallback builds the file index for ref, retrying transient rate-limit
 // errors, and falls back to HEAD when the requested ref's tree is not found (404).
-func treeIndexWithFallback(client *http.Client, apiBase, owner, repo, ref, token string) (map[string]string, error) {
-	attempt := func(r string) (map[string]string, error) {
-		var index map[string]string
+func treeIndexWithFallback(client *http.Client, apiBase, owner, repo, ref, token string) (map[string][]string, error) {
+	attempt := func(r string) (map[string][]string, error) {
+		var index map[string][]string
 		var err error
 		for i := 0; i < 3; i++ {
 			index, err = buildFileIndex(client, apiBase, owner, repo, r, token)
@@ -355,6 +356,13 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 				return rebuildFix(newPath, 0.7)
 			}
 		}
+		// History couldn't disambiguate. Fall back to directory proximity: prefer the
+		// candidate whose directory shares the longest path-segment prefix with the
+		// original. Only offer it when the winner is unique — a tie is a coin-flip and
+		// a wrong confident fix is worse than an honest "ambiguous".
+		if best, ok := closestByDirProximity(filePath, matches); ok {
+			return rebuildFix(best, 0.5)
+		}
 		return types.ResolutionResult{
 			ValidationResult: result,
 			UnresolvedReason: types.UnresolvedAmbiguous,
@@ -362,12 +370,42 @@ func resolveViaGitHubAPIWithBase(result types.ValidationResult, token, apiBase s
 	}
 }
 
+// closestByDirProximity picks the candidate whose directory shares the longest
+// leading path-segment prefix with originalPath. It returns (path, true) only when
+// a single candidate has the strictly-longest shared prefix; on a tie (or no
+// candidates) it returns ("", false) so the caller can treat the case as ambiguous
+// rather than guess.
+func closestByDirProximity(originalPath string, candidates []string) (string, bool) {
+	origSegs := strings.Split(filepath.ToSlash(filepath.Dir(originalPath)), "/")
+	sharedPrefix := func(p string) int {
+		segs := strings.Split(filepath.ToSlash(filepath.Dir(p)), "/")
+		n := 0
+		for n < len(origSegs) && n < len(segs) && origSegs[n] == segs[n] {
+			n++
+		}
+		return n
+	}
+	bestPath, bestLen := "", -1
+	tie := false
+	for _, c := range candidates {
+		if n := sharedPrefix(c); n > bestLen {
+			bestLen, bestPath, tie = n, c, false
+		} else if n == bestLen {
+			tie = true
+		}
+	}
+	if bestPath == "" || tie {
+		return "", false
+	}
+	return bestPath, true
+}
+
 // findAllPaths returns all paths in the index whose basename matches fileName,
 // excluding the original filePath (which is the known-broken location).
-func findAllPaths(index map[string]string, fileName, originalPath string) []string {
+func findAllPaths(index map[string][]string, fileName, originalPath string) []string {
 	var matches []string
-	for base, path := range index {
-		if base == fileName && path != originalPath {
+	for _, path := range index[fileName] {
+		if path != originalPath {
 			matches = append(matches, path)
 		}
 	}
@@ -402,11 +440,13 @@ func findRenameCommit(client *http.Client, apiBase, owner, repo, filePath, token
 // current tree index it was renamed again; keep following until the path is in the
 // index, no further rename is found, or maxRenameHops is reached. Returns the terminal
 // path (which may be the input newPath if it can't be advanced).
-func followRenameChain(client *http.Client, apiBase, owner, repo string, index map[string]string, newPath, token string) string {
+func followRenameChain(client *http.Client, apiBase, owner, repo string, index map[string][]string, newPath, token string) string {
 	inIndex := func(p string) bool {
-		for _, full := range index {
-			if full == p {
-				return true
+		for _, paths := range index {
+			for _, full := range paths {
+				if full == p {
+					return true
+				}
 			}
 		}
 		return false

@@ -16,6 +16,14 @@ GitHub Enterprise links (any host with a configured token — see [validation.md
 
 For GitHub links, the resolver checks rename history before concluding a file was deleted — a case-only rename (e.g. `FAQ.md` → `faq.md`) is correctly resolved as a rename, not a deletion.
 
+When several files in the repo share the broken link's basename (e.g. multiple
+`reconciler.go`), the resolver first tries commit history to identify the exact rename.
+If history can't disambiguate, it falls back to **directory proximity** — preferring the
+candidate whose directory shares the longest leading path with the original — and offers
+it only at reduced confidence (0.5). If two or more candidates are equally close, no fix
+is guessed: the link is reported as `Ambiguous (multiple matches)` rather than risking a
+confident-wrong fix.
+
 ## Usage
 
 Full pipeline with AI and Wayback enrichment:
@@ -66,6 +74,12 @@ When `--ai` is set, the resolver uses an AI model as a last resort for external 
 - 403/429 responses (bot-blocked sites) skip AI entirely — the page likely works in a browser
 
 Requires `AI_API_KEY` in the environment or `.env`. Supports both Anthropic's API and any OpenAI-compatible proxy (LiteLLM, Azure OpenAI, etc.) via `AI_BASE_URL`.
+
+If the key is rejected (HTTP 401/403 — missing, invalid, or expired), the tool prints a
+single run-level warning to stderr and continues; AI resolution is effectively disabled
+for that run and each affected link carries the `AI auth error (check AI_API_KEY)` reason.
+Because keys on the SAP LiteLLM proxy expire, a run that silently stops resolving external
+links is usually a stale `AI_API_KEY` — watch for that warning.
 
 ## Wayback Machine enrichment (`--wayback`)
 

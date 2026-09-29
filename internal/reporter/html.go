@@ -21,6 +21,17 @@ type reportRow struct {
 	Resolution *types.ResolutionResult
 }
 
+// anchorFixMinScore is the confidence floor for presenting a fuzzy anchor suggestion
+// as a confident fix ("Has fix"). Suggestions below it are still shown — as a clickable
+// "Possible match" hint — but excluded from the fixed set, because a confident-wrong fix
+// is worse than an honest "maybe". Measured on a real gardener/documentation run, 0.7
+// cleanly separates the observed good anchor fixes (0.73+) from the bad ones (≤0.62).
+const anchorFixMinScore = 0.7
+
+// strategyAnchorHint marks a synthesised anchor suggestion whose score is below
+// anchorFixMinScore — a weak "possible match" rather than a confident fix.
+const strategyAnchorHint = "anchor-hint"
+
 var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 	"isAbsolute": func(r reportRow) bool { return r.Type == types.LinkTypeAbsolute },
 	"isGitHubURL": func(s string) bool {
@@ -115,17 +126,41 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		if r.Resolution.IsWaybackFallback {
 			return "No live replacement found — see archived version: " + r.Resolution.FixedURL
 		}
-		// For anchor suggestions, show the corrected relative/anchor form as the label
-		// (the href is the full GitHub URL for easy navigation, but the label shows what
-		// the link should look like in the source file).
-		if r.Resolution.Strategy == "anchor-suggestion" && r.Result != nil && r.Result.SuggestedAnchor != "" {
+		// For anchor suggestions (confident or hint), show the corrected relative/anchor
+		// form as the label (the href is the full GitHub URL for easy navigation, but the
+		// label shows what the link should look like in the source file). Weak matches are
+		// prefixed so the user knows not to trust them blindly.
+		if (r.Resolution.Strategy == "anchor-suggestion" || r.Resolution.Strategy == strategyAnchorHint) && r.Result != nil && r.Result.SuggestedAnchor != "" {
 			u := r.URL
 			if i := strings.Index(u, "#"); i >= 0 {
 				u = u[:i]
 			}
-			return u + "#" + r.Result.SuggestedAnchor
+			label := u + "#" + r.Result.SuggestedAnchor
+			if r.Resolution.Strategy == strategyAnchorHint {
+				return "Possible match (low confidence): " + label
+			}
+			return label
 		}
 		return r.Resolution.FixedURL
+	},
+	// fixedState returns the data-fixed attribute value that drives both row styling
+	// and the "Fixed" filter chips: "yes" (confident fix), "hint" (weak possible match),
+	// "deleted", "wayback", or "no". Centralising it here keeps the template markup and
+	// the JS filter in agreement on a single classification.
+	"fixedState": func(r reportRow) string {
+		if r.Resolution == nil || r.Resolution.FixedURL == "" {
+			return "no"
+		}
+		if r.Resolution.Deleted {
+			return "deleted"
+		}
+		if r.Resolution.IsWaybackFallback {
+			return "wayback"
+		}
+		if r.Resolution.Strategy == strategyAnchorHint {
+			return "hint"
+		}
+		return "yes"
 	},
 	"unresolvedReason": func(r reportRow) string {
 		if r.Resolution == nil || r.Resolution.FixedURL != "" {
@@ -189,6 +224,8 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 				return "Closest match (" + conf + " confidence)"
 			}
 			return "Closest match"
+		case strategyAnchorHint:
+			return "Possible match"
 		}
 		return r.Resolution.Strategy
 	},
@@ -199,6 +236,8 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		switch r.Resolution.Strategy {
 		case types.StrategyAI, types.StrategyWaybackAI:
 			return "strategy-ai"
+		case strategyAnchorHint:
+			return "strategy-hint"
 		}
 		return "strategy-normal"
 	},
@@ -229,6 +268,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   .chip.active.valid-chip { border-color:#166534; background:#dcfce7; color:#166534; }
   .chip.active.ignored-chip { border-color:#6b7280; background:#f3f4f6; color:#6b7280; }
   .chip.active.not-assembled-chip { border-color:#92400e; background:#fef3c7; color:#92400e; }
+  .chip.active.possible-chip { border-color:#854d0e; background:#fef9c3; color:#854d0e; }
   .chip-clear { padding:.2rem .5rem; border-radius:4px; border:1px solid #ddd; background:#f9f9f9; font-size:.78rem; cursor:pointer; color:#555; }
   .chip-clear:hover { background:#f0f0f0; }
   table { border-collapse: collapse; width: 100%; font-size: .9rem; }
@@ -248,6 +288,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   .not-assembled { background:#fef3c7; color:#92400e; }
   .strategy-normal { background:#dbeafe; color:#1e40af; }
   .strategy-ai     { background:#fef9c3; color:#854d0e; }
+  .strategy-hint   { background:#f3f4f6; color:#6b7280; }
   .unresolved-reason { color:#6b7280; font-size:.8rem; font-style:italic; }
   a { color: #2563eb; }
 </style>
@@ -277,6 +318,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
   <div class="filter-group">
     <label>Fixed:</label>
     <span class="chip" onclick="toggleChip(this,'fixed','yes')">Has fix</span>
+    <span class="chip possible-chip" onclick="toggleChip(this,'fixed','hint')">Possible match</span>
     <span class="chip" onclick="toggleChip(this,'fixed','no')">Unresolved</span>
     <span class="chip" onclick="toggleChip(this,'fixed','deleted')">Deleted</span>
     <span class="chip" onclick="toggleChip(this,'fixed','wayback')">Wayback fallback</span>
@@ -300,7 +342,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
     <tr{{if eq (statusClass .) "broken"}} class="row-broken"{{end}}
         data-type="{{.Type}}"
         data-status="{{statusClass .}}"
-        data-fixed="{{if fixedURL .}}{{if .Resolution}}{{if .Resolution.Deleted}}deleted{{else if .Resolution.IsWaybackFallback}}wayback{{else}}yes{{end}}{{else}}yes{{end}}{{else}}no{{end}}">
+          data-fixed="{{fixedState .}}">
       <td><span class="badge {{.Type}}">{{.Type}}</span></td>
       <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
       <td>{{if isGitHubURL .Rel}}<a href="{{.Rel}}" target="_blank" rel="noopener">{{.Rel}}</a>{{else}}{{.Rel}}{{end}}</td>
@@ -464,10 +506,16 @@ func WriteHTML(outPath, root, rootRelativeBase string, r *pipeline.Result) error
 						}
 					}
 				}
+				// Score below the fix gate → present as a weak "possible match" hint
+				// (still clickable) rather than a confident fix.
+				strategy := "anchor-suggestion"
+				if v.SuggestedAnchorScore < anchorFixMinScore {
+					strategy = strategyAnchorHint
+				}
 				synth := types.ResolutionResult{
 					ValidationResult: v,
 					FixedURL:         suggested,
-					Strategy:         "anchor-suggestion",
+					Strategy:         strategy,
 					ConfidenceScore:  v.SuggestedAnchorScore,
 					Confidence:       types.ConfidenceLabel(v.SuggestedAnchorScore),
 				}
