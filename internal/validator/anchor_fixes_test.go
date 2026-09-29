@@ -81,6 +81,9 @@ func TestClosestAnchorPasses(t *testing.T) {
 		{"-extension-clusterrole--reconciler", []string{"extension-clusterrole-reconciler", "other"}, "extension-clusterrole-reconciler"},
 		// Pass 6: word-token overlap — word substitution.
 		{"hibernate-a-cluster", []string{"hibernate-your-cluster-manually", "other"}, "hibernate-your-cluster-manually"},
+		// Pass 2: short fragment buried in a long candidate is still *selected* (only
+		// its score is demoted in Phase 2 — selection identity is unchanged).
+		{"garden", []string{"gardener-discovery-server", "other"}, "gardener-discovery-server"},
 	}
 
 	for _, tc := range cases {
