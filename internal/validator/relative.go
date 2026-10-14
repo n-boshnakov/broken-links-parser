@@ -373,19 +373,34 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 	}
 
 	// Pass 6: word-token overlap — handles word-reorder and leading-dash fragments.
-	// Requires ≥2 shared tokens and overlap/len(fragment tokens) ≥ 0.5.
-	fragTokens := filterEmpty(strings.Split(fragment, "-"))
+	// Stopwords (a, the, to, your, …) are dropped from both sides before counting, so a
+	// filler word shared with a long heading can't inflate the match. Among candidates
+	// that clear the gate (≥2 shared content tokens, ≥0.5 of the fragment's content
+	// tokens covered), the winner maximises a blend of fragment coverage and candidate
+	// coverage — the latter favours a tight heading over a long one that merely happens
+	// to contain all the fragment's words (e.g. "hibernate-your-cluster-manually" over
+	// "create-a-schedule-to-hibernate-your-cluster" for #hibernate-a-cluster).
+	fragTokens := contentTokens(fragment)
 	if len(fragTokens) >= 2 {
-		bestOverlap, bestRatio := "", 0.0
+		bestOverlap, bestScore, bestRatio := "", 0.0, 0.0
 		for _, c := range candidates {
-			ct := filterEmpty(strings.Split(c, "-"))
+			ct := contentTokens(c)
+			if len(ct) == 0 {
+				continue
+			}
 			shared := tokenOverlap(fragTokens, ct)
-			ratio := float64(shared) / float64(len(fragTokens))
-			if shared >= 2 && ratio >= 0.5 {
-				if ratio > bestRatio || (ratio == bestRatio && len(c) < len(bestOverlap)) {
-					bestRatio = ratio
-					bestOverlap = c
-				}
+			fragRatio := float64(shared) / float64(len(fragTokens))
+			if shared < 2 || fragRatio < 0.5 {
+				continue
+			}
+			candRatio := float64(shared) / float64(len(ct))
+			// Weight fragment coverage more (it's the signal of intent) but let candidate
+			// coverage break the common case where several headings cover the fragment.
+			rank := 0.7*fragRatio + 0.3*candRatio
+			if rank > bestScore || (rank == bestScore && len(c) < len(bestOverlap)) {
+				bestScore = rank
+				bestRatio = fragRatio
+				bestOverlap = c
 			}
 		}
 		if bestOverlap != "" {
@@ -393,6 +408,32 @@ func closestAnchorScored(fragment string, candidates []string) (string, float64)
 		}
 	}
 	return "", 0
+}
+
+// stopwords are filler tokens that carry no distinguishing meaning in a heading anchor.
+// They are excluded from token-overlap matching so a shared "a"/"the"/"to" can't make a
+// long, loosely-related heading outrank a tighter semantic match.
+var stopwords = map[string]bool{
+	"a": true, "an": true, "the": true, "to": true, "of": true, "for": true,
+	"and": true, "or": true, "in": true, "on": true, "at": true, "by": true,
+	"with": true, "your": true, "you": true, "is": true, "are": true, "be": true,
+}
+
+// contentTokens splits an anchor into its hyphen-delimited tokens and drops stopwords.
+// If every token is a stopword, the original token set is returned so the match still
+// has something to compare against.
+func contentTokens(anchor string) []string {
+	all := filterEmpty(strings.Split(anchor, "-"))
+	out := make([]string, 0, len(all))
+	for _, t := range all {
+		if !stopwords[t] {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return all
+	}
+	return out
 }
 
 // levenshtein computes the edit distance between two strings.
