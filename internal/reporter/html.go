@@ -128,18 +128,15 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
 		}
 		// For anchor suggestions (confident or hint), show the corrected relative/anchor
 		// form as the label (the href is the full GitHub URL for easy navigation, but the
-		// label shows what the link should look like in the source file). Weak matches are
-		// prefixed so the user knows not to trust them blindly.
+		// label shows what the link should look like in the source file). The confidence
+		// qualifier lives in the strategy column ("Possible match"), so the label here stays
+		// clean — just the suggested link — for both confident and weak matches.
 		if (r.Resolution.Strategy == "anchor-suggestion" || r.Resolution.Strategy == strategyAnchorHint) && r.Result != nil && r.Result.SuggestedAnchor != "" {
 			u := r.URL
 			if i := strings.Index(u, "#"); i >= 0 {
 				u = u[:i]
 			}
-			label := u + "#" + r.Result.SuggestedAnchor
-			if r.Resolution.Strategy == strategyAnchorHint {
-				return "Possible match (low confidence): " + label
-			}
-			return label
+			return u + "#" + r.Result.SuggestedAnchor
 		}
 		return r.Resolution.FixedURL
 	},
