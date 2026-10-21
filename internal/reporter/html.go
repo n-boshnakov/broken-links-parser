@@ -344,7 +344,7 @@ var reportTmpl = template.Must(template.New("report").Funcs(template.FuncMap{
       <td>{{if isAbsolute .}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>{{else}}{{.URL}}{{end}}</td>
       <td>{{if isGitHubURL .Rel}}<a href="{{.Rel}}" target="_blank" rel="noopener">{{.Rel}}</a>{{else}}{{.Rel}}{{end}}</td>
       {{if .Result}}<td><span class="badge {{statusClass .}}">{{statusLabel .}}</span>{{if reasonLabel .}} <code>{{reasonLabel .}}</code>{{end}}</td>{{end}}
-      {{if .Resolution}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}"{{if reasoning .}} title="{{reasoning .}}"{{end}}>{{strategyLabel .}}</span>{{end}}</td>{{end}}
+      {{if hasResolution $.Links}}<td>{{if fixedURL .}}<a href="{{fixedURL .}}" target="_blank" rel="noopener">{{fixedLabel .}}</a>{{else if unresolvedReason .}}<span class="unresolved-reason">{{unresolvedReason .}}</span>{{end}}</td><td>{{if strategyLabel .}}<span class="badge {{strategyClass .}}"{{if reasoning .}} title="{{reasoning .}}"{{end}}>{{strategyLabel .}}</span>{{end}}</td>{{end}}
     </tr>
   {{end}}
   </tbody>
@@ -481,8 +481,9 @@ func WriteHTML(outPath, root, rootRelativeBase string, r *pipeline.Result) error
 				}
 				suggested := u + "#" + v.SuggestedAnchor
 				// If we have a GitHub source URL, resolve the relative suggestion to an
-				// absolute GitHub URL so the user can click through directly.
-				if strings.HasPrefix(sourceURL, "https://github.com/") {
+				// absolute GitHub URL so the user can click through directly. Accept any
+				// GitHub host (github.com or an enterprise GHE such as github.tools.sap).
+				if isGitHubBlobURL(sourceURL) {
 					if v.SuggestedTargetPath != "" {
 						// The validator already resolved the route to a real file (e.g.
 						// ".../usage.md"); build the URL from that so we don't drop the
@@ -580,6 +581,41 @@ func getDefaultBranch(repoRoot string) string {
 	return "master"
 }
 
+// isGitHubBlobURL reports whether sourceURL (fragment allowed) is a recognised
+// /blob/ URL on any host — github.com or an enterprise GHE.
+func isGitHubBlobURL(sourceURL string) bool {
+	base := sourceURL
+	if i := strings.Index(base, "#"); i >= 0 {
+		base = base[:i]
+	}
+	_, _, ok := splitGitHubBlob(base)
+	return ok
+}
+
+// splitGitHubBlob parses a GitHub (or enterprise GHE) blob URL of the form
+// <scheme>://<host>/owner/repo/blob/branch/path/to/file into its repo-base prefix
+// (through the trailing "branch/", with a trailing slash) and the file path. It is
+// host-agnostic — github.com and internal hosts such as github.tools.sap both parse —
+// so callers no longer hard-code "https://github.com/". ok is false for any URL that
+// isn't a recognised /blob/ link. The caller must have stripped the fragment already.
+func splitGitHubBlob(base string) (repoBase, sourcePath string, ok bool) {
+	for _, scheme := range []string{"https://", "http://"} {
+		if !strings.HasPrefix(base, scheme) {
+			continue
+		}
+		rest := strings.TrimPrefix(base, scheme)
+		// rest: host/owner/repo/blob/branch/path/to/file
+		parts := strings.SplitN(rest, "/", 6)
+		if len(parts) < 6 || parts[3] != "blob" {
+			return "", "", false
+		}
+		host, owner, repo, branch := parts[0], parts[1], parts[2], parts[4]
+		repoBase = scheme + host + "/" + owner + "/" + repo + "/blob/" + branch + "/"
+		return repoBase, parts[5], true
+	}
+	return "", "", false
+}
+
 // repoBlobURL builds an absolute GitHub blob URL for a repo-relative file path and
 // anchor, reusing the owner/repo/branch of sourceURL (a GitHub blob URL of any file in
 // the same repo). repoRelPath is relative to the repo root (e.g. "hugo/content/docs/x.md").
@@ -589,15 +625,10 @@ func repoBlobURL(sourceURL, repoRelPath, anchor string) string {
 	if i := strings.Index(base, "#"); i >= 0 {
 		base = base[:i]
 	}
-	const ghPrefix = "https://github.com/"
-	if !strings.HasPrefix(base, ghPrefix) {
+	repoBase, _, ok := splitGitHubBlob(base)
+	if !ok {
 		return ""
 	}
-	parts := strings.SplitN(strings.TrimPrefix(base, ghPrefix), "/", 5)
-	if len(parts) < 5 || parts[2] != "blob" {
-		return ""
-	}
-	repoBase := ghPrefix + parts[0] + "/" + parts[1] + "/blob/" + parts[3] + "/"
 	url := repoBase + cleanJoinedPath(repoRelPath)
 	if anchor != "" {
 		url += "#" + anchor
@@ -614,25 +645,17 @@ func repoBlobURL(sourceURL, repoRelPath, anchor string) string {
 // when unknown, in which case root-relative targets return "" (no misleading URL).
 // Returns "" if sourceURL is not a recognised GitHub URL.
 func resolveGitHubAnchorURL(sourceURL, relTarget, anchor, contentRel string) string {
-	// sourceURL: https://github.com/owner/repo/blob/branch/path/to/source.md
+	// sourceURL: https://<host>/owner/repo/blob/branch/path/to/source.md
 	// Strip fragment and trailing slash from sourceURL first.
 	base := sourceURL
 	if i := strings.Index(base, "#"); i >= 0 {
 		base = base[:i]
 	}
-	// Split into prefix (https://github.com/owner/repo/blob/branch) and file path.
-	// Format: https://github.com/owner/repo/blob/branch/path/to/file
-	const ghPrefix = "https://github.com/"
-	if !strings.HasPrefix(base, ghPrefix) {
+	// Split into prefix (https://<host>/owner/repo/blob/branch/) and file path.
+	repoBase, sourcePath, ok := splitGitHubBlob(base)
+	if !ok {
 		return ""
 	}
-	parts := strings.SplitN(strings.TrimPrefix(base, ghPrefix), "/", 5)
-	// parts: [owner, repo, "blob", branch, path/to/source.md]
-	if len(parts) < 5 || parts[2] != "blob" {
-		return ""
-	}
-	repoBase := ghPrefix + parts[0] + "/" + parts[1] + "/blob/" + parts[3] + "/"
-	sourcePath := parts[4] // e.g. "docs/usage/security/shoot_serviceaccounts.md"
 
 	// Anchor-only link — target is the source file itself.
 	if relTarget == "" {

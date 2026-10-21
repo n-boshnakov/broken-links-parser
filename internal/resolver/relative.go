@@ -193,13 +193,20 @@ func ResolveRelative(result types.ValidationResult, repoRoot string, noFetch boo
 	}
 
 	if logResult.newPath != "" {
-		// Re-compute as a relative link from the source file.
-		newAbs := filepath.Join(repoRoot, logResult.newPath)
-		newRel, err := filepath.Rel(filepath.Dir(result.Link.SourceFile), newAbs)
-		if err != nil {
-			newRel = logResult.newPath
+		// Prefer an absolute blob URL so the fix is clickable regardless of the
+		// host (github.com or an enterprise GHE such as github.tools.sap). This
+		// works for any remote; only when the repo has no remote (e.g. a bare
+		// local checkout) do we fall back to a relative path from the source file.
+		fixedURL := remoteBlobURL(repoRoot, logResult.newPath, fragment)
+		if fixedURL == "" {
+			// No usable remote — re-compute as a relative link from the source file.
+			newAbs := filepath.Join(repoRoot, logResult.newPath)
+			newRel, err := filepath.Rel(filepath.Dir(result.Link.SourceFile), newAbs)
+			if err != nil {
+				newRel = logResult.newPath
+			}
+			fixedURL = filepath.ToSlash(newRel) + fragment
 		}
-		fixedURL := filepath.ToSlash(newRel) + fragment
 		return types.ResolutionResult{
 			ValidationResult: result,
 			FixedURL:         fixedURL,
@@ -242,4 +249,85 @@ func getRemoteURL(repoRoot string) string {
 		}
 	}
 	return ""
+}
+
+// remoteBlobURL builds an absolute <host>/<owner>/<repo>/blob/<branch>/<repoRelPath>
+// URL for a repo-relative path, using the repo's own remote so the host is correct
+// for github.com and any enterprise GHE alike. repoRelPath is slash- or OS-separated
+// and relative to repoRoot; fragment includes its leading '#' (or is empty).
+// Returns "" when the repo has no usable remote, so callers can fall back.
+func remoteBlobURL(repoRoot, repoRelPath, fragment string) string {
+	remote := getRemoteURL(repoRoot)
+	if remote == "" {
+		return ""
+	}
+	base := normalizeRemoteToHTTPS(remote)
+	if base == "" {
+		return ""
+	}
+	branch := defaultBranch(repoRoot)
+	return base + "/blob/" + branch + "/" + filepath.ToSlash(repoRelPath) + fragment
+}
+
+// normalizeRemoteToHTTPS converts a git remote URL to its canonical
+// https://<host>/<owner>/<repo> form, handling scp-style (git@host:owner/repo),
+// ssh:// and https:// inputs and stripping any trailing ".git". Returns "" if the
+// remote can't be parsed into host + path.
+func normalizeRemoteToHTTPS(remote string) string {
+	remote = strings.TrimSpace(strings.TrimSuffix(remote, ".git"))
+	switch {
+	case strings.HasPrefix(remote, "https://"), strings.HasPrefix(remote, "http://"):
+		return remote
+	case strings.HasPrefix(remote, "ssh://"):
+		// ssh://git@host[:port]/owner/repo
+		rest := strings.TrimPrefix(remote, "ssh://")
+		if i := strings.Index(rest, "@"); i >= 0 {
+			rest = rest[i+1:]
+		}
+		// Drop an optional :port between host and path.
+		if slash := strings.Index(rest, "/"); slash >= 0 {
+			hostPort, path := rest[:slash], rest[slash:]
+			if c := strings.Index(hostPort, ":"); c >= 0 {
+				hostPort = hostPort[:c]
+			}
+			return "https://" + hostPort + path
+		}
+		return ""
+	case strings.Contains(remote, "@") && strings.Contains(remote, ":"):
+		// scp-style: git@host:owner/repo
+		at := strings.Index(remote, "@")
+		colon := strings.Index(remote, ":")
+		if colon <= at {
+			return ""
+		}
+		host := remote[at+1 : colon]
+		path := remote[colon+1:]
+		return "https://" + host + "/" + strings.TrimPrefix(path, "/")
+	default:
+		return ""
+	}
+}
+
+// defaultBranch returns the repo's default branch name (e.g. "main", "master").
+// It reads origin/HEAD, then falls back to the current branch, then "HEAD".
+func defaultBranch(repoRoot string) string {
+	// origin/HEAD points at the remote's default branch after a clone/fetch.
+	out, err := exec.Command("git", "-C", repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	if err == nil {
+		ref := strings.TrimSpace(string(out)) // e.g. "origin/main"
+		if i := strings.LastIndex(ref, "/"); i >= 0 {
+			ref = ref[i+1:]
+		}
+		if ref != "" {
+			return ref
+		}
+	}
+	// Fall back to the currently checked-out branch.
+	out, err = exec.Command("git", "-C", repoRoot, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err == nil {
+		if b := strings.TrimSpace(string(out)); b != "" && b != "HEAD" {
+			return b
+		}
+	}
+	return "HEAD"
 }

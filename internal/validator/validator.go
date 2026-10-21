@@ -168,7 +168,11 @@ func Validate(links []types.Link, opts ValidateOptions) ([]types.ValidationResul
 			cacheMu.Lock()
 			cached, ok := cache.Get(u, TTLFor(u, opts.CacheTTL, opts.DomainTTLs))
 			cacheMu.Unlock()
-			if ok {
+			// Never trust a cached IGNORED verdict: ignore status reflects the
+			// patterns active for *this* run, not a network fact. Fall through to
+			// live validation so the current patterns are re-applied. This also
+			// neutralises any cache poisoned by an earlier run's --ignore-pattern.
+			if ok && cached.Reason != types.ReasonIgnored {
 				apply(u, cached)
 				// Count every link sharing this URL as a cache hit, matching the
 				// prior per-link accounting.

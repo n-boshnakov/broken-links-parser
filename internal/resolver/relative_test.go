@@ -255,3 +255,74 @@ func TestResolveRelative_Cache(t *testing.T) {
 		t.Errorf("expected 1 cache entry, got %d", count)
 	}
 }
+
+// TestResolveRelative_RenameAbsoluteURL verifies that when the repo has a remote,
+// a renamed relative link resolves to an absolute blob URL on that remote's host
+// (here an enterprise GHE host), not a relative path.
+func TestResolveRelative_RenameAbsoluteURL(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	// Give the repo a remote on an enterprise GHE host so the fix is absolutised.
+	cmd := exec.Command("git", "-C", dir, "remote", "add", "origin",
+		"git@github.tools.sap:cloudfoundry/product-cf-hcp.git")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v\n%s", err, out)
+	}
+
+	_ = os.WriteFile(filepath.Join(dir, "old.md"), []byte("# Old\n"), 0o644)
+	commit(t, dir, "add old.md")
+	mv := exec.Command("git", "-C", dir, "mv", "old.md", "new.md")
+	if out, err := mv.CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v\n%s", err, out)
+	}
+	commit(t, dir, "rename old.md to new.md")
+
+	sourceFile := filepath.Join(dir, "source.md")
+	_ = os.WriteFile(sourceFile, []byte(""), 0o644)
+
+	result := types.ValidationResult{
+		Link: types.Link{
+			URL:        "old.md#section",
+			Type:       types.LinkTypeRelative,
+			SourceFile: sourceFile,
+		},
+		Valid:  false,
+		Reason: types.ReasonFileNotFound,
+	}
+
+	res := ResolveRelative(result, dir, true, NewGitCache())
+	// Branch is "HEAD" here because there is no origin/HEAD in a local-only test repo;
+	// the default branch of the test commit isn't fetched. The host, owner, repo, path
+	// and fragment are what this test pins.
+	wantPrefix := "https://github.tools.sap/cloudfoundry/product-cf-hcp/blob/"
+	if !strings.HasPrefix(res.FixedURL, wantPrefix) {
+		t.Errorf("FixedURL %q should start with %q (absolute GHE URL)", res.FixedURL, wantPrefix)
+	}
+	if !strings.HasSuffix(res.FixedURL, "/new.md#section") {
+		t.Errorf("FixedURL %q should end with /new.md#section (path + fragment preserved)", res.FixedURL)
+	}
+}
+
+func TestNormalizeRemoteToHTTPS(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{"https with .git", "https://github.com/o/r.git", "https://github.com/o/r"},
+		{"https without .git", "https://github.tools.sap/o/r", "https://github.tools.sap/o/r"},
+		{"scp-style", "git@github.tools.sap:cloudfoundry/product-cf-hcp.git", "https://github.tools.sap/cloudfoundry/product-cf-hcp"},
+		{"scp-style no .git", "git@github.com:o/r", "https://github.com/o/r"},
+		{"ssh scheme with user", "ssh://git@github.com/o/r.git", "https://github.com/o/r"},
+		{"ssh scheme with port", "ssh://git@github.tools.sap:22/o/r.git", "https://github.tools.sap/o/r"},
+		{"unparseable", "not-a-url", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeRemoteToHTTPS(tc.remote); got != tc.want {
+				t.Errorf("normalizeRemoteToHTTPS(%q) = %q, want %q", tc.remote, got, tc.want)
+			}
+		})
+	}
+}

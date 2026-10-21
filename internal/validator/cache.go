@@ -102,6 +102,15 @@ func (c ValidationCache) Set(url string, result types.ValidationResult) {
 // momentary blip masquerade as a broken link for the full TTL, so they are
 // re-checked on every run instead.
 func cacheable(r types.ValidationResult) bool {
+	// IGNORED is not a network verdict — it reflects the ignore patterns active
+	// for the current run (--ignore-pattern / --scoped-ignore-file). Persisting it
+	// would let a transient ignore leak into later runs that no longer pass the
+	// pattern, hiding links that should now be validated. Ignores are cheap to
+	// recompute, so never cache them; this check must precede the r.Valid
+	// short-circuit below, since IGNORED results are stored as Valid=true.
+	if r.Reason == types.ReasonIgnored {
+		return false
+	}
 	if r.Valid {
 		return true
 	}

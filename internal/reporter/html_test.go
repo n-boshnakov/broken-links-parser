@@ -135,6 +135,14 @@ func TestResolveGitHubAnchorURL(t *testing.T) {
 			want:       "https://github.com/o/r/blob/main/docs/b/other.md#sec",
 		},
 		{
+			name:       "enterprise GHE host is supported, not only github.com",
+			sourceURL:  "https://github.tools.sap/cloudfoundry/product-cf-hcp/blob/master/components/a/doc/page.md",
+			relTarget:  "../b/other.md",
+			anchor:     "sec",
+			contentRel: "",
+			want:       "https://github.tools.sap/cloudfoundry/product-cf-hcp/blob/master/components/a/b/other.md#sec",
+		},
+		{
 			name:       "anchor-only targets the source file",
 			sourceURL:  "https://github.com/o/r/blob/main/docs/page.md",
 			relTarget:  "",
@@ -191,6 +199,13 @@ func TestRepoBlobURL(t *testing.T) {
 			repoRelPath: "hugo/content/docs/x.md",
 			anchor:      "",
 			want:        "https://github.com/gardener/documentation/blob/master/hugo/content/docs/x.md",
+		},
+		{
+			name:        "enterprise GHE host is supported, not only github.com",
+			sourceURL:   "https://github.tools.sap/cloudfoundry/product-cf-hcp/blob/master/components/a/doc/page.md",
+			repoRelPath: "components/b/doc/other.md",
+			anchor:      "sec",
+			want:        "https://github.tools.sap/cloudfoundry/product-cf-hcp/blob/master/components/b/doc/other.md#sec",
 		},
 		{
 			name:        "non-GitHub source returns empty",

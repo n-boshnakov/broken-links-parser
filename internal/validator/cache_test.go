@@ -96,6 +96,7 @@ func TestCacheable(t *testing.T) {
 		want bool
 	}{
 		{"valid", types.ValidationResult{Link: link, Valid: true}, true},
+		{"ignored not cached", types.ValidationResult{Link: link, Valid: true, Reason: types.ReasonIgnored}, false},
 		{"settled 404", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 404}, true},
 		{"settled 410", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 410}, true},
 		{"transient 503 not cached", types.ValidationResult{Link: link, Reason: types.ReasonHTTPError, StatusCode: 503}, false},
