@@ -9,8 +9,9 @@ A CLI tool that scans Markdown and HTML documentation repositories for broken li
 | **1. Extraction** — collect all links from `.md` and `.html` files | ✅ Done | [docs/extraction.md](docs/extraction.md) |
 | **2. Validation** — check each link (disk / HTTP); result cache for fast re-runs | ✅ Done | [docs/validation.md](docs/validation.md) |
 | **3. Resolution** — find correct replacement via git history / GitHub API / AI / Wayback | ✅ Done | [docs/resolution.md](docs/resolution.md) |
-| **4. Repair** — rewrite broken links in source files | 🔲 Planned | — |
-| **5. Reporting** — CSV export + docforge-compatible log | 🔲 Planned | — |
+| **4. Reporting** — self-contained interactive HTML report (filter / sort / search; clickable source links) | ✅ Done | [docs/html-report.md](docs/html-report.md) |
+
+The pipeline is complete end to end. An auto-repair stage (rewriting links in source) was in the original plan but was dropped by decision: low-confidence and AI-suggested fixes are common, so a silent bad rewrite is worse than a flagged break. The resolver suggests fixes and the HTML report makes applying them trivial. See [docs/evolution.md](docs/evolution.md) for the full history.
 
 ## Quick start
 
