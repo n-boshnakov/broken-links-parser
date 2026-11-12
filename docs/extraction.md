@@ -1,6 +1,6 @@
 # Link Extraction
 
-The extractor is the first pipeline stage. It walks `.md` and `.html` files in a repository and returns every link it finds, along with its type, the anchor/alt text, and the byte offset of the URL in the source file. (The byte offsets are captured now so a future repair stage can rewrite links in place.)
+The extractor is the first pipeline stage. It walks `.md` and `.html` files in a repository and returns every link it finds, along with its type, the anchor/alt text, and the byte offset of the URL in the source file. (The byte offsets are captured even though the always-on repair stage was dropped; they leave the door open for an opt-in `--dry-run` diff preview if review-first batch fixing is ever added. See [evolution.md](evolution.md).)
 
 ## Link types
 
